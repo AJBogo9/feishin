@@ -12,6 +12,9 @@
   ],
   "compilerOptions": {
     "composite": true,
+    // Node's test runner resolves ESM specifiers verbatim, so the test file imports
+    // "./mpv-lifecycle.ts" with its extension. Type checking runs with --noEmit.
+    "allowImportingTsExtensions": true,
     "types": ["electron-vite/node"],
     "esModuleInterop": true,
     "baseUrl": ".",

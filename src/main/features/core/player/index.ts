@@ -8,6 +8,13 @@ import process from 'process';
 import { getMainWindow, sendToastToRenderer } from '../../../index';
 import log from '../../../logger';
 import { store } from '../settings';
+import {
+    createMpvSupervisor,
+    createResumeCoalescer,
+    destroyMpv,
+    killMpvChild,
+    MpvCreateData,
+} from './mpv-lifecycle';
 
 import { isMacOS, isWindows } from '/@/main/env';
 import { PlayerData } from '/@/shared/types/domain-types';
@@ -22,11 +29,6 @@ declare module 'node-mpv';
 //     });
 // }
 
-let mpvInstance: MpvAPI | null = null;
-// Set while a create is in flight. `mpvInstance` is null across that await, so callers that
-// only check it would otherwise conclude mpv is absent and spawn a throwaway instance
-// alongside the one being started.
-let mpvCreatePromise: null | Promise<MpvAPI> = null;
 let currentPlayerData: null | PlayerData = null;
 const socketPath = isWindows() ? `\\\\.\\pipe\\mpvserver-${pid}` : `/tmp/node-mpv-${pid}.sock`;
 
@@ -247,59 +249,71 @@ const createMpv = async (data: {
     return mpv;
 };
 
-export const getMpvInstance = () => {
-    return mpvInstance;
-};
-
 const QUIT_TIMEOUT_MS = 3000;
 
-const killMpvProcess = (mpv: MpvAPI) => {
-    const mpvProcess = (mpv as any).process || (mpv as any).mpvProcess;
-    if (mpvProcess && typeof mpvProcess.kill === 'function') {
-        try {
-            mpvProcess.kill('SIGTERM');
-        } catch (killErr) {
-            mpvLog({ action: 'Failed to kill mpv process' }, killErr as NodeMpvError);
-        }
+// Electron delivers powerMonitor 'resume' twice for a single wake on Linux, a few ms apart.
+const RESUME_COALESCE_MS = 1000;
+
+const cleanupSocket = async () => {
+    if (isWindows()) {
+        return;
+    }
+
+    try {
+        await rm(socketPath);
+    } catch {
+        // Ignore errors when removing socket file
     }
 };
 
+const teardownOptions = {
+    cleanupSocket,
+    log: (message: string) => mpvLog({ action: message }),
+    timeoutMs: QUIT_TIMEOUT_MS,
+};
+
+// Every mpv instance listens on the same socket path, and a newer mpv silently takes that
+// socket over. Two instances alive at once therefore means one of them is unreachable,
+// untracked, and still playing, so all creates and teardowns go through one owner.
+const mpvSupervisor = createMpvSupervisor<MpvAPI>({
+    ...teardownOptions,
+    create: (data: MpvCreateData) => createMpv(data),
+});
+
+export const getMpvInstance = () => {
+    return mpvSupervisor.getInstance();
+};
+
+// Events from a dying instance must not reach the renderer as if they were real playback.
+const beginTeardown = () => {
+    suppressRendererPlaybackEvents = true;
+    playbackEventGeneration += 1;
+};
+
+const reloadMpv = async (data: MpvCreateData) => {
+    beginTeardown();
+    return mpvSupervisor.reload(data);
+};
+
+const shutdownMpv = async () => {
+    beginTeardown();
+    await mpvSupervisor.shutdown();
+};
+
+// Tears down an instance the supervisor does not own (the throwaway used to probe devices).
 const quit = async (instance?: MpvAPI | null) => {
     const mpv = instance || getMpvInstance();
-    if (mpv) {
-        suppressRendererPlaybackEvents = true;
-        playbackEventGeneration += 1;
-        try {
-            // mpv.quit() resolves only when mpv replies over IPC. If mpv's command queue
-            // is wedged (e.g. blocked on a dead network stream after the system resumes
-            // from sleep), that reply never arrives, so this must not be allowed to hang
-            // forever - fall back to killing the process directly.
-            let timedOut = false;
-            await Promise.race([
-                mpv.quit(),
-                new Promise((resolve) => {
-                    setTimeout(() => {
-                        timedOut = true;
-                        resolve(undefined);
-                    }, QUIT_TIMEOUT_MS);
-                }),
-            ]);
-
-            if (timedOut) {
-                killMpvProcess(mpv);
-            }
-        } catch {
-            // If quit() fails, try to kill the process directly
-            killMpvProcess(mpv);
-        }
-        if (!isWindows()) {
-            try {
-                await rm(socketPath);
-            } catch {
-                // Ignore errors when removing socket file
-            }
-        }
+    if (!mpv) {
+        return;
     }
+
+    if (mpv === getMpvInstance()) {
+        await shutdownMpv();
+        return;
+    }
+
+    beginTeardown();
+    await destroyMpv(mpv, teardownOptions);
 };
 
 const setAudioPlayerFallback = (isError: boolean) => {
@@ -335,23 +349,7 @@ ipcMain.handle(
                 level: 'debug',
             });
 
-            // Clean up previous mpv instance
-            suppressRendererPlaybackEvents = true;
-            playbackEventGeneration += 1;
-            getMpvInstance()?.stop();
-            getMpvInstance()
-                ?.quit()
-                .catch((error) => {
-                    mpvLog({ action: 'Failed to quit existing MPV' }, error);
-                });
-            mpvInstance = null;
-
-            mpvCreatePromise = createMpv(data);
-            try {
-                mpvInstance = await mpvCreatePromise;
-            } finally {
-                mpvCreatePromise = null;
-            }
+            await reloadMpv(data);
             mpvLog({ action: 'Restarted mpv', toast: 'success' });
             setAudioPlayerFallback(false);
         } catch (err: any | NodeMpvError) {
@@ -369,12 +367,7 @@ ipcMain.handle(
                 action: `Attempting to initialize mpv with parameters: ${JSON.stringify(data)}`,
                 level: 'debug',
             });
-            mpvCreatePromise = createMpv(data);
-            try {
-                mpvInstance = await mpvCreatePromise;
-            } finally {
-                mpvCreatePromise = null;
-            }
+            await reloadMpv(data);
             setAudioPlayerFallback(false);
         } catch (err: any | NodeMpvError) {
             mpvLog({ action: 'Failed to initialize mpv, falling back to web player' }, err);
@@ -384,16 +377,12 @@ ipcMain.handle(
 );
 
 ipcMain.on('player-quit', async () => {
-    // stop() also drives playlist-pos to -1; suppress before that so reload does not look like a track end.
-    suppressRendererPlaybackEvents = true;
-    playbackEventGeneration += 1;
+    // shutdownMpv() suppresses renderer events first: stop() drives playlist-pos to -1, which
+    // would otherwise look like a track end.
     try {
-        await getMpvInstance()?.stop();
-        await quit();
+        await shutdownMpv();
     } catch (err: any | NodeMpvError) {
         mpvLog({ action: 'Failed to quit mpv' }, err);
-    } finally {
-        mpvInstance = null;
     }
 });
 
@@ -692,13 +681,7 @@ ipcMain.handle(
     async (): Promise<{ label: string; value: string }[]> => {
         try {
             // Wait out an in-flight startup so the real instance is reused instead of racing it.
-            if (mpvCreatePromise) {
-                try {
-                    await mpvCreatePromise;
-                } catch {
-                    // Startup failed; fall through to the temporary-instance path below.
-                }
-            }
+            await mpvSupervisor.whenIdle();
 
             const instance = getMpvInstance();
             let tempInstance: MpvAPI | null = null;
@@ -767,27 +750,12 @@ const cleanupMpv = async (force = false) => {
         return;
     }
 
-    const instance = getMpvInstance();
-    if (instance) {
-        try {
-            if (!force) {
-                await instance.stop();
-            }
-            await quit(instance);
-        } catch (err: any | NodeMpvError) {
-            mpvLog({ action: `Failed to cleanup mpv` }, err);
-            // Force kill as fallback
-            const mpvProcess = (instance as any).process || (instance as any).mpvProcess;
-            if (mpvProcess && typeof mpvProcess.kill === 'function') {
-                try {
-                    mpvProcess.kill('SIGKILL');
-                } catch {
-                    // Ignore kill errors
-                }
-            }
-        } finally {
-            mpvInstance = null;
-        }
+    try {
+        // Every step here is time-boxed and escalates to SIGKILL, so a wedged mpv can no longer
+        // strand before-quit in IN_PROGRESS and leave the window unclosable.
+        await shutdownMpv();
+    } catch (err: any | NodeMpvError) {
+        mpvLog({ action: `Failed to cleanup mpv` }, err);
     }
 };
 
@@ -795,9 +763,15 @@ const cleanupMpv = async (force = false) => {
 // (the connection silently dropped while the network adapter was suspended). Tell
 // the renderer to reload mpv so it reconnects with a fresh stream instead of staying
 // stuck on the old, now-dead connection until the app is manually restarted.
-powerMonitor.on('resume', () => {
+// Electron fires this twice for a single wake on Linux. Without coalescing, the renderer
+// starts two reloads and the losing mpv keeps playing with nothing tracking it.
+const handleSystemResume = createResumeCoalescer(RESUME_COALESCE_MS, () => {
     mpvLog({ action: 'System resumed from sleep, notifying renderer to reconnect mpv' });
     getMainWindow()?.webContents.send('renderer-mpv-reconnect');
+});
+
+powerMonitor.on('resume', () => {
+    handleSystemResume();
 });
 
 app.on('before-quit', async (event) => {
@@ -827,15 +801,7 @@ app.on('before-quit', async (event) => {
 process.on('exit', () => {
     const instance = getMpvInstance();
     if (instance) {
-        // Try to access and kill the process directly
-        const mpvProcess = (instance as any).process || (instance as any).mpvProcess;
-        if (mpvProcess && typeof mpvProcess.kill === 'function') {
-            try {
-                mpvProcess.kill('SIGKILL');
-            } catch {
-                // Ignore errors during exit
-            }
-        }
+        killMpvChild(instance, 'SIGKILL');
     }
 });
 
