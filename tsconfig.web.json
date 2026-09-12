@@ -13,6 +13,9 @@
   ],
   "compilerOptions": {
     "composite": true,
+    // Node's test runner resolves ESM specifiers verbatim, so test files import
+    // "./queue-removal.ts" with its extension. Type checking runs with --noEmit.
+    "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
