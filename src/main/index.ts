@@ -37,6 +37,7 @@ import './features';
 import { hotkeyToElectronAccelerator } from './utils';
 
 import { disableAutoUpdates, isLinux, isMacOS, isWindows } from '/@/main/env';
+import { isSameEntryDocument } from '/@/main/utils/navigation';
 import {
     clampWindowBoundsToDisplay,
     DEFAULT_WINDOW_BOUNDS,
@@ -906,11 +907,29 @@ async function createWindow(first = true): Promise<void> {
     const theme = store.get('theme') as TitleTheme | undefined;
     nativeTheme.themeSource = theme || 'dark';
 
-    mainWindow.webContents.setWindowOpenHandler((details) => {
-        if (validateUrl(details.url)) {
+    // Chromium navigates to a dropped file unless the drop is cancelled, which would replace the
+    // app (preload bridge and all) with the file viewer, with no way back in a frameless window.
+    const contents = mainWindow.webContents;
+    contents.on('will-navigate', (details) => {
+        if (isSameEntryDocument(contents.getURL(), details.url)) {
+            return;
+        }
+
+        details.preventDefault();
+
+        // Log the scheme and host only: Subsonic share URLs reach this path with a token in them.
+        let target = details.url;
+        try {
+            const parsed = new URL(details.url);
+            target = `${parsed.protocol}//${parsed.host}`;
+        } catch {
+            target = '<unparseable>';
+        }
+        log.warn('Blocked in-window navigation', { target });
+
+        if (validateUrl(details.url) || details.url.startsWith('spotify:')) {
             shell.openExternal(details.url);
         }
-        return { action: 'deny' };
     });
 
     // HMR for renderer base on electron-vite cli.

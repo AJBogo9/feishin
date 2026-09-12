@@ -8,6 +8,7 @@ import { WebSocket, WebSocketServer, Server as WsServer } from 'ws';
 import { deflate, gzip } from 'zlib';
 
 import manifest from './manifest.json';
+import { isAllowedOrigin } from './origin-check';
 
 import { isLinux } from '/@/main/env';
 import { getMainWindow } from '/@/main/index';
@@ -54,6 +55,20 @@ declare class StatefulWebSocket extends WebSocket {
     alive: boolean;
     auth: boolean;
 }
+
+let lastRejectedOrigin: string | undefined;
+
+/**
+ * A rejected browser client retries every 2 s forever, so log only the first of each distinct
+ * origin: enough to diagnose a Host-rewriting proxy, not enough to roll the log file over.
+ * Rejection is invisible to a browser client, so this line is the only evidence a locked-out
+ * user has.
+ */
+const warnRejectedOrigin = (origin: string | undefined, host: string | undefined) => {
+    if (origin === lastRejectedOrigin) return;
+    lastRejectedOrigin = origin;
+    log.warn('Remote client rejected: cross-origin handshake', { host, origin });
+};
 
 let server: Server | undefined;
 let wsServer: undefined | WsServer<typeof StatefulWebSocket>;
@@ -121,6 +136,9 @@ export const shutdownServer = (closeCode = 4000) => {
         server.close();
         server = undefined;
     }
+
+    // Re-arm the one-shot rejection warning, so a restart after fixing a proxy logs again.
+    lastRejectedOrigin = undefined;
 };
 
 const MIME_TYPES: MimeType = {
@@ -467,7 +485,25 @@ const enableServer = (config: RemoteConfig): Promise<void> => {
                 log.error('Remote server listen failed', { error, port: config.port });
                 settle(() => reject(error));
             });
-            wsServer = new WebSocketServer<typeof StatefulWebSocket>({ server });
+            wsServer = new WebSocketServer<typeof StatefulWebSocket>({
+                server,
+                // The HTTP authorize() gate never runs for a socket: a handshake emits 'upgrade',
+                // not 'request'. Returning false here aborts with a 401 before the upgrade
+                // completes. Reading Origin off the request rather than ws's parsed field also
+                // covers Sec-WebSocket-Version 8.
+                verifyClient: ({ req }) => {
+                    const origin = req.headers.origin;
+
+                    if (
+                        isAllowedOrigin(origin, req.headers.host, req.headers['x-forwarded-host'])
+                    ) {
+                        return true;
+                    }
+
+                    warnRejectedOrigin(origin, req.headers.host);
+                    return false;
+                },
+            });
 
             wsServer!.on('connection', (ws: StatefulWebSocket) => {
                 let authFail: number | undefined;
