@@ -33,6 +33,7 @@ import { RemoteLibraryHook } from '/@/renderer/features/remote/hooks/use-remote-
 import { RemoteQueuePushHook } from '/@/renderer/features/remote/hooks/use-remote-queue-push';
 import { RemoteRadioPushHook } from '/@/renderer/features/remote/hooks/use-remote-radio-push';
 import { RemoteSettingsPushHook } from '/@/renderer/features/remote/hooks/use-remote-settings-push';
+import { normalizeMpvSampleRate } from '/@/renderer/features/settings/components/playback/mpv-properties';
 import { VisualizerSystemAudioBridgeHook } from '/@/renderer/features/visualizer/components/visualizer-system-audio-bridge';
 import { useSettingsStore } from '/@/renderer/store';
 import {
@@ -217,7 +218,7 @@ const AudioPlayersContent = ({
         try {
             context = new AudioContext({
                 latencyHint: 'playback',
-                sampleRate: audioSampleRateHz || undefined,
+                sampleRate: normalizeMpvSampleRate(audioSampleRateHz) || undefined,
             });
         } catch (error) {
             // In practice, this should never be hit because the UI should validate

@@ -189,7 +189,12 @@ export const MpvPlayerEngine = (props: MpvPlayerEngineProps) => {
             }
         };
 
-        initializeMpv();
+        // main now rejects the invoke when mpv fails to start, so this must be caught or every
+        // failed start becomes an unhandled rejection. The user-facing toast comes from main on
+        // the `renderer-player-error` channel; mpvInitialized deliberately stays false.
+        initializeMpv().catch((error) => {
+            logger.error('Failed to initialize mpv', { error });
+        });
 
         return () => {
             isCancelled = true;

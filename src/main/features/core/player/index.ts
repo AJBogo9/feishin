@@ -13,6 +13,7 @@ import {
     createResumeCoalescer,
     destroyMpv,
     killMpvChild,
+    ManagedMpv,
     MpvCreateData,
     settleOrTimeout,
 } from './mpv-lifecycle';
@@ -59,10 +60,15 @@ const NodeMpvErrorCode = {
     7: 'Could not send IPC message',
     8: 'MPV is not running',
     9: 'Unsupported protocol',
+    // node-mpv rejects start() with this when it cannot connect to the IPC socket, which is the
+    // most likely resume-from-sleep failure. Without it the toast reads "errorcode 10 - undefined".
+    10: 'IPC connection error',
 };
 
 type NodeMpvError = {
     errcode: number;
+    // node-mpv attaches mpv's own reason here (lib/error.js); it is absent on some codes.
+    errmessage?: string;
     method: string;
     stackTrace: string;
     verbose: string;
@@ -79,13 +85,19 @@ const mpvLog = (
     const { action, toast } = data;
 
     if (err) {
-        const message = `${action} - mpv errorcode ${err.errcode} - ${
-            NodeMpvErrorCode[err.errcode as keyof typeof NodeMpvErrorCode]
-        }`;
+        // Reply-level failures reject with a bare string, so `errcode` can be missing entirely.
+        // Fall back to whatever node-mpv did populate rather than printing "undefined".
+        const known = NodeMpvErrorCode[err.errcode as keyof typeof NodeMpvErrorCode];
+        const described = known ?? err.verbose ?? err.errmessage ?? String(err);
+        // `errmessage` carries mpv's own reason (e.g. "property not found"). Without it a
+        // rejected set_property only ever reads "errorcode 3 - ipcCommand invalid", which says
+        // nothing about which value mpv refused.
+        const reason = known && err.errmessage ? ` - ${err.errmessage}` : '';
+        const message = `${action} - mpv errorcode ${err.errcode} - ${described}${reason}`;
 
         sendToastToRenderer({ message, type: 'error' });
         log.error(message);
-        return;
+        return message;
     }
 
     const level = data.level ?? 'info';
@@ -93,6 +105,8 @@ const mpvLog = (
     if (toast) {
         sendToastToRenderer({ message: action, type: toast });
     }
+
+    return action;
 };
 
 const MPV_BINARY_PATH = store.get('mpv_path') as string | undefined;
@@ -184,8 +198,34 @@ const createMpv = async (data: {
         log.info('mpv initialized', { binary: resolvedBinaryPath ?? 'bundled/default' });
     } catch (error: any) {
         log.error('mpv failed to start', error);
-    } finally {
+
+        // A start that fails after the child was spawned leaves a live mpv nobody owns: the
+        // supervisor only records an instance that `create` resolved, so this process would keep
+        // running and holding the IPC socket. Same orphan class as the resume-from-sleep bug.
+        // node-mpv sets `mpvPlayer` when it spawns the child, but its .d.ts does not declare it.
+        if ((mpv as unknown as ManagedMpv).mpvPlayer?.pid) {
+            await destroyMpv(mpv, {
+                ...teardownOptions,
+                // Every instance shares one socket path, so unlinking it while a healthy
+                // instance still owns it would make the next start spawn a duplicate.
+                cleanupSocket: getMpvInstance() ? undefined : teardownOptions.cleanupSocket,
+                // A half-started child answers neither stop nor quit; do not spend the full
+                // quit budget on it at launch and on every wake.
+                timeoutMs: 1000,
+            }).catch(() => {});
+        }
+
+        throw error;
+    }
+
+    try {
+        // Deliberately not fatal, and deliberately not in a `finally`. setMultipleProperties
+        // resolves Promise.all, so one property mpv refuses rejects the whole batch after the
+        // rest applied. A refused property is not a dead player, and the renderer re-applies
+        // volume, mute, speed and pitch through its own effects once initialized.
         await mpv.setMultipleProperties(properties || {});
+    } catch (error: any) {
+        log.warn('Failed to apply initial mpv properties', error);
     }
 
     let previousPlaylistPos: number | undefined;
@@ -326,16 +366,13 @@ const setAudioPlayerFallback = (isError: boolean) => {
 
 ipcMain.on('player-set-properties', async (_event, data: Record<string, any>) => {
     mpvLog({ action: `Setting properties: ${JSON.stringify(data)}`, level: 'debug' });
-    if (data.length === 0) {
-        return;
-    }
 
     try {
-        if (data.length === 1) {
-            getMpvInstance()?.setProperty(Object.keys(data)[0], Object.values(data)[0]);
-        } else {
-            getMpvInstance()?.setMultipleProperties(data);
-        }
+        // `data` is a plain object, so the old `data.length` branches were always undefined and
+        // never ran. The await matters: mpv rejects an out-of-range property, and without it the
+        // rejection escapes to the process-wide `unhandledRejection` handler, which runs
+        // `cleanupMpv(true)` and kills playback over a mistyped setting.
+        await getMpvInstance()?.setMultipleProperties(data);
     } catch (err: any | NodeMpvError) {
         mpvLog({ action: `Failed to set properties: ${JSON.stringify(data)}` }, err);
     }
@@ -354,8 +391,10 @@ ipcMain.handle(
             mpvLog({ action: 'Restarted mpv', toast: 'success' });
             setAudioPlayerFallback(false);
         } catch (err: any | NodeMpvError) {
-            mpvLog({ action: 'Failed to restart mpv, falling back to web player' }, err);
+            const message = mpvLog({ action: 'Failed to restart mpv' }, err);
             setAudioPlayerFallback(true);
+            getMainWindow()?.webContents.send('renderer-player-error', message);
+            throw new Error(message);
         }
     },
 );
@@ -371,8 +410,16 @@ ipcMain.handle(
             await reloadMpv(data);
             setAudioPlayerFallback(false);
         } catch (err: any | NodeMpvError) {
-            mpvLog({ action: 'Failed to initialize mpv, falling back to web player' }, err);
+            // No fallback engine exists any more, so do not claim one in the message.
+            const message = mpvLog({ action: 'Failed to initialize mpv' }, err);
             setAudioPlayerFallback(true);
+
+            // Surface it on the channel the renderer already listens to, and reject the invoke
+            // so the renderer stops marking mpv as initialized after a failed start. A plain
+            // Error is required: node-mpv rejects with object literals, which IPC serializes
+            // into an Error with an empty message.
+            getMainWindow()?.webContents.send('renderer-player-error', message);
+            throw new Error(message);
         }
     },
 );

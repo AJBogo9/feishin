@@ -2,7 +2,7 @@ import isElectron from 'is-electron';
 import { memo, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { getMpvSetting } from './mpv-properties';
+import { clampMpvDb, getMpvSetting, MPV_DB_RANGES, normalizeMpvSampleRate } from './mpv-properties';
 
 import { eventEmitter } from '/@/renderer/events/event-emitter';
 import { usePlayer } from '/@/renderer/features/player/context/player-context';
@@ -37,6 +37,11 @@ export const MpvSettings = memo(() => {
     // const { clearQueue } = useQueueControls();
 
     const [mpvPath, setMpvPath] = useState('');
+    // Bumped on every sample-rate blur so the uncontrolled NumberInput remounts and re-reads the
+    // value that was actually stored. A store-derived key would not work: the common case is a
+    // rejected rate coercing to the already-stored 0, which leaves the box showing the typed
+    // number while mpv runs on auto.
+    const [sampleRateNonce, setSampleRateNonce] = useState(0);
 
     const handleSetMpvPath = async (clear?: boolean) => {
         if (clear) {
@@ -71,15 +76,23 @@ export const MpvSettings = memo(() => {
         setting: keyof SettingsState['playback']['mpvProperties'],
         value: any,
     ) => {
+        // Clamp before the store write, not just before the IPC send. The web player reads
+        // `mpvProperties` straight out of the store to build its GainNode, so a value only
+        // sanitised on the way to mpv would still reach it on the fallback engine.
+        const storedValue =
+            setting in MPV_DB_RANGES
+                ? (clampMpvDb(setting as keyof typeof MPV_DB_RANGES, value) ?? value)
+                : value;
+
         setSettings({
             playback: {
                 mpvProperties: {
-                    [setting]: value,
+                    [setting]: storedValue,
                 },
             },
         });
 
-        const mpvSetting = getMpvSetting(setting, value);
+        const mpvSetting = getMpvSetting(setting, storedValue);
 
         mpvPlayer?.setProperties(mpvSetting);
     };
@@ -211,12 +224,16 @@ export const MpvSettings = memo(() => {
             control: (
                 <NumberInput
                     defaultValue={settings.mpvProperties.audioSampleRateHz || undefined}
+                    key={sampleRateNonce}
                     max={192000}
                     min={0}
                     onBlur={(e) => {
-                        const value = Number(e.currentTarget.value);
                         // Setting a value of `undefined` causes an error for MPV. Use 0 instead
-                        handleSetMpvProperty('audioSampleRateHz', value >= 8000 ? value : value);
+                        handleSetMpvProperty(
+                            'audioSampleRateHz',
+                            normalizeMpvSampleRate(Number(e.currentTarget.value)),
+                        );
+                        setSampleRateNonce((nonce) => nonce + 1);
                     }}
                     placeholder="48000"
                     rightSection={<Text size="xs">Hz</Text>}
@@ -289,7 +306,10 @@ export const MpvSettings = memo(() => {
         {
             control: (
                 <NumberInput
+                    clampBehavior="strict"
                     defaultValue={settings.mpvProperties.replayGainPreampDB}
+                    max={MPV_DB_RANGES.replayGainPreampDB[1]}
+                    min={MPV_DB_RANGES.replayGainPreampDB[0]}
                     onChange={(e) => handleSetMpvProperty('replayGainPreampDB', Number(e) || 0)}
                     width={75}
                 />
@@ -320,7 +340,10 @@ export const MpvSettings = memo(() => {
         {
             control: (
                 <NumberInput
+                    clampBehavior="strict"
                     defaultValue={settings.mpvProperties.replayGainFallbackDB}
+                    max={MPV_DB_RANGES.replayGainFallbackDB[1]}
+                    min={MPV_DB_RANGES.replayGainFallbackDB[0]}
                     onBlur={(e) =>
                         handleSetMpvProperty('replayGainFallbackDB', Number(e.currentTarget.value))
                     }

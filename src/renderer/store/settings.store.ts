@@ -21,6 +21,10 @@ import {
     PLAYLIST_TABLE_COLUMNS,
     SONG_TABLE_COLUMNS,
 } from '/@/renderer/components/item-list/item-table-list/default-columns';
+import {
+    clampMpvDb,
+    normalizeMpvSampleRate,
+} from '/@/renderer/features/settings/components/playback/mpv-properties';
 import { audiomotionanalyzerPresets } from '/@/renderer/features/visualizer/components/audiomotionanalyzer/presets';
 import { AppRoute } from '/@/renderer/router/routes';
 import { getEnvSettingsOverrides } from '/@/renderer/store/env-settings-overrides';
@@ -2923,10 +2927,29 @@ export const useSettingsStore = createWithEqualityFn<SettingsSlice>()(
                     });
                 }
 
+                if (version < 35) {
+                    // Repair values older builds let through unvalidated. An out-of-range dB makes
+                    // mpv reject the property and tear the player down, and the web player feeds
+                    // the same number straight into a GainNode exponent.
+                    const properties = state.playback?.mpvProperties;
+
+                    if (properties) {
+                        properties.audioSampleRateHz = normalizeMpvSampleRate(
+                            properties.audioSampleRateHz,
+                        );
+                        properties.replayGainPreampDB =
+                            clampMpvDb('replayGainPreampDB', properties.replayGainPreampDB) ?? 0;
+                        properties.replayGainFallbackDB = clampMpvDb(
+                            'replayGainFallbackDB',
+                            properties.replayGainFallbackDB,
+                        ) as number;
+                    }
+                }
+
                 return persistedState;
             },
             name: 'store_settings',
-            version: 34,
+            version: 35,
         },
     ),
 );
