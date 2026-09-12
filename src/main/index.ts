@@ -1003,9 +1003,19 @@ const getMenuAccelerator = (
     return hotkeyToElectronAccelerator(hotkey);
 };
 
-const HOTKEY_ACTIONS: Record<BindingActions, () => void> = {
-    [BindingActions.GLOBAL_SEARCH]: () => {},
-    [BindingActions.LOCAL_SEARCH]: () => {},
+/**
+ * The actions main can actually perform for a global accelerator.
+ *
+ * Partial on purpose: the renderer's binding list is much longer than this, and registering an
+ * accelerator for a binding with no entry here used to call `undefined()` inside the shortcut
+ * callback. That threw on every press and was swallowed by the process-wide uncaughtException
+ * handler, so the accelerator was grabbed OS-wide and did nothing at all.
+ *
+ * Bindings that only make sense in the focused window (search, queue and full-screen toggles) are
+ * deliberately absent rather than mapped to a no-op: a no-op still steals the accelerator from
+ * every other application.
+ */
+const HOTKEY_ACTIONS: Partial<Record<BindingActions, () => void>> = {
     [BindingActions.MUTE]: () => getMainWindow()?.webContents.send('renderer-player-volume-mute'),
     [BindingActions.NEXT]: () => getMainWindow()?.webContents.send('renderer-player-next'),
     [BindingActions.NEXT_ALBUM]: () =>
@@ -1024,8 +1034,6 @@ const HOTKEY_ACTIONS: Record<BindingActions, () => void> = {
     [BindingActions.SKIP_FORWARD]: () =>
         getMainWindow()?.webContents.send('renderer-player-skip-forward'),
     [BindingActions.STOP]: () => getMainWindow()?.webContents.send('renderer-player-stop'),
-    [BindingActions.TOGGLE_FULLSCREEN_PLAYER]: () => {},
-    [BindingActions.TOGGLE_QUEUE]: () => {},
     [BindingActions.TOGGLE_REPEAT]: () =>
         getMainWindow()?.webContents.send('renderer-player-toggle-repeat'),
     [BindingActions.VOLUME_DOWN]: () =>
@@ -1043,21 +1051,15 @@ ipcMain.on(
         // Since we're not tracking the previous shortcuts, we need to unregister all of them
         globalShortcut.unregisterAll();
 
-        for (const shortcut of Object.keys(data)) {
-            const isGlobalHotkey = data[shortcut as BindingActions].isGlobal;
-            const isValidHotkey =
-                data[shortcut as BindingActions].hotkey &&
-                data[shortcut as BindingActions].hotkey !== '';
+        for (const [shortcut, binding] of Object.entries(data)) {
+            // Registering a binding main cannot act on grabs the accelerator from the whole OS
+            // and then throws on every press, so require the action to exist. Checking the action
+            // rather than a name list also makes this enforced by the type checker.
+            const action = HOTKEY_ACTIONS[shortcut as BindingActions];
 
-            if (isGlobalHotkey && isValidHotkey) {
-                const accelerator = hotkeyToElectronAccelerator(
-                    data[shortcut as BindingActions].hotkey,
-                );
+            if (!action || !binding.isGlobal || !binding.hotkey) continue;
 
-                globalShortcut.register(accelerator, () => {
-                    HOTKEY_ACTIONS[shortcut as BindingActions]();
-                });
-            }
+            globalShortcut.register(hotkeyToElectronAccelerator(binding.hotkey), action);
         }
 
         playbackMenuAccelerators = {

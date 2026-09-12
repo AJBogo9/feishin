@@ -295,32 +295,34 @@ export const HotkeyManagerSettings = memo(() => {
                                         </Table.Td>
                                         {isElectron() && (
                                             <Table.Td>
-                                                <Checkbox
-                                                    checked={
-                                                        bindings[
-                                                            binding as keyof typeof BINDINGS_MAP
-                                                        ].isGlobal
-                                                    }
-                                                    disabled={
-                                                        bindings[
-                                                            binding as keyof typeof BINDINGS_MAP
-                                                        ].hotkey === ''
-                                                    }
-                                                    onChange={(e) =>
-                                                        handleSetGlobalHotkey(
-                                                            binding as BindingActions,
-                                                            e,
-                                                        )
-                                                    }
-                                                    size="md"
-                                                    style={{
-                                                        opacity: bindings[
-                                                            binding as keyof typeof BINDINGS_MAP
-                                                        ].allowGlobal
-                                                            ? 1
-                                                            : 0,
-                                                    }}
-                                                />
+                                                {/* Only render the box where a global accelerator
+                                                    can actually work. It used to be hidden with
+                                                    opacity: 0, which left it clickable and
+                                                    tab-focusable for bindings that ship with a
+                                                    default hotkey, so an invisible control could
+                                                    grab Enter system-wide with no way to undo it. */}
+                                                {bindings[binding as keyof typeof BINDINGS_MAP]
+                                                    .allowGlobal && (
+                                                    <Checkbox
+                                                        checked={
+                                                            bindings[
+                                                                binding as keyof typeof BINDINGS_MAP
+                                                            ].isGlobal
+                                                        }
+                                                        disabled={
+                                                            bindings[
+                                                                binding as keyof typeof BINDINGS_MAP
+                                                            ].hotkey === ''
+                                                        }
+                                                        onChange={(e) =>
+                                                            handleSetGlobalHotkey(
+                                                                binding as BindingActions,
+                                                                e,
+                                                            )
+                                                        }
+                                                        size="md"
+                                                    />
+                                                )}
                                             </Table.Td>
                                         )}
                                         {bindings[binding as keyof typeof BINDINGS_MAP].hotkey && (

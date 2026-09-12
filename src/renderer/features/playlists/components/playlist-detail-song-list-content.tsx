@@ -9,6 +9,7 @@ import { eventEmitter } from '/@/renderer/events/event-emitter';
 import { playlistsQueries } from '/@/renderer/features/playlists/api/playlists-api';
 import { PlaylistDetailAlbumView } from '/@/renderer/features/playlists/components/playlist-detail-album-view';
 import { usePlaylistTrackList } from '/@/renderer/features/playlists/hooks/use-playlist-track-list';
+import { reconcilePlaylistEditItems } from '/@/renderer/features/playlists/reconcile-playlist-edit-items';
 import { reorderPlaylistItems } from '/@/renderer/features/playlists/utils/playlist-reorder';
 import { useCurrentServer, useListSettings } from '/@/renderer/store';
 import { Spinner } from '/@/shared/components/spinner/spinner';
@@ -160,6 +161,30 @@ export const PlaylistDetailSongListEdit = ({ data }: { data: PlaylistSongListRes
     const [localData, setLocalData] = useState<PlaylistSongListResponse>(data);
 
     const tableRef = useRef<ItemListHandle | null>(null);
+    // Only reconcile once the user actually has pending edits worth protecting; until then a
+    // refetch should just replace the buffer.
+    const hasLocalEdits = useRef(false);
+
+    // Edit mode used to snapshot the track list once, with nothing syncing later server state in.
+    // Save and Replace posts this buffer as a full replacement, so tracks added to the playlist
+    // from anywhere else while edit mode was open were silently removed on save.
+    useEffect(() => {
+        setLocalData((prev) => {
+            if (!hasLocalEdits.current) {
+                return data;
+            }
+
+            const items = reconcilePlaylistEditItems(prev.items ?? [], data.items ?? []);
+
+            // Identity bail-out, load-bearing: without it every no-op refetch produces a new
+            // array and re-fires the setListData effect below.
+            const unchanged =
+                items.length === (prev.items?.length ?? 0) &&
+                items.every((item, index) => item === prev.items[index]);
+
+            return unchanged ? prev : { ...data, items };
+        });
+    }, [data]);
 
     // Listen for playlist reorder events
     useEffect(() => {
@@ -173,6 +198,8 @@ export const PlaylistDetailSongListEdit = ({ data }: { data: PlaylistSongListRes
             if (payload.playlistId !== playlistId) {
                 return;
             }
+
+            hasLocalEdits.current = true;
 
             setLocalData((prev) =>
                 prev?.items ? { ...prev, items: reorderPlaylistItems(prev.items, payload) } : prev,
@@ -199,11 +226,14 @@ export const PlaylistDetailSongListEdit = ({ data }: { data: PlaylistSongListRes
         ];
     }, [table.columns]);
 
-    const { setListData } = useListContext();
+    const { setItemCount, setListData } = useListContext();
 
     useEffect(() => {
         setListData?.(localData.items);
-    }, [localData, setListData]);
+        // Feed the badge from the same buffer as the list. It otherwise kept the pre-edit count,
+        // and entering edit mode with a client-side filter active left it on the filtered count.
+        setItemCount?.(localData.items.length);
+    }, [localData, setItemCount, setListData]);
 
     switch (display) {
         case ListDisplayType.GRID:

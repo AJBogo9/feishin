@@ -1440,12 +1440,12 @@ const initialState: SettingsState = {
         bindings: {
             browserBack: { allowGlobal: false, hotkey: '', isGlobal: false },
             browserForward: { allowGlobal: false, hotkey: '', isGlobal: false },
-            favoriteCurrentAdd: { allowGlobal: true, hotkey: '', isGlobal: false },
-            favoriteCurrentRemove: { allowGlobal: true, hotkey: '', isGlobal: false },
-            favoriteCurrentToggle: { allowGlobal: true, hotkey: '', isGlobal: false },
-            favoritePreviousAdd: { allowGlobal: true, hotkey: '', isGlobal: false },
-            favoritePreviousRemove: { allowGlobal: true, hotkey: '', isGlobal: false },
-            favoritePreviousToggle: { allowGlobal: true, hotkey: '', isGlobal: false },
+            favoriteCurrentAdd: { allowGlobal: false, hotkey: '', isGlobal: false },
+            favoriteCurrentRemove: { allowGlobal: false, hotkey: '', isGlobal: false },
+            favoriteCurrentToggle: { allowGlobal: false, hotkey: '', isGlobal: false },
+            favoritePreviousAdd: { allowGlobal: false, hotkey: '', isGlobal: false },
+            favoritePreviousRemove: { allowGlobal: false, hotkey: '', isGlobal: false },
+            favoritePreviousToggle: { allowGlobal: false, hotkey: '', isGlobal: false },
             globalSearch: { allowGlobal: false, hotkey: 'mod+k', isGlobal: false },
             listNavigateToPage: { allowGlobal: false, hotkey: 'mod+g', isGlobal: false },
             listPlayDefault: { allowGlobal: false, hotkey: 'enter', isGlobal: false },
@@ -1462,12 +1462,12 @@ const initialState: SettingsState = {
             playPause: { allowGlobal: true, hotkey: 'space', isGlobal: false },
             previous: { allowGlobal: true, hotkey: '', isGlobal: false },
             previousAlbum: { allowGlobal: true, hotkey: '', isGlobal: false },
-            rate0: { allowGlobal: true, hotkey: '', isGlobal: false },
-            rate1: { allowGlobal: true, hotkey: '', isGlobal: false },
-            rate2: { allowGlobal: true, hotkey: '', isGlobal: false },
-            rate3: { allowGlobal: true, hotkey: '', isGlobal: false },
-            rate4: { allowGlobal: true, hotkey: '', isGlobal: false },
-            rate5: { allowGlobal: true, hotkey: '', isGlobal: false },
+            rate0: { allowGlobal: false, hotkey: '', isGlobal: false },
+            rate1: { allowGlobal: false, hotkey: '', isGlobal: false },
+            rate2: { allowGlobal: false, hotkey: '', isGlobal: false },
+            rate3: { allowGlobal: false, hotkey: '', isGlobal: false },
+            rate4: { allowGlobal: false, hotkey: '', isGlobal: false },
+            rate5: { allowGlobal: false, hotkey: '', isGlobal: false },
             skipBackward: { allowGlobal: true, hotkey: '', isGlobal: false },
             skipForward: { allowGlobal: true, hotkey: '', isGlobal: false },
             stop: { allowGlobal: true, hotkey: '', isGlobal: false },
@@ -1478,8 +1478,8 @@ const initialState: SettingsState = {
             volumeDown: { allowGlobal: true, hotkey: '', isGlobal: false },
             volumeMute: { allowGlobal: true, hotkey: '', isGlobal: false },
             volumeUp: { allowGlobal: true, hotkey: '', isGlobal: false },
-            zoomIn: { allowGlobal: true, hotkey: '', isGlobal: false },
-            zoomOut: { allowGlobal: true, hotkey: '', isGlobal: false },
+            zoomIn: { allowGlobal: false, hotkey: '', isGlobal: false },
+            zoomOut: { allowGlobal: false, hotkey: '', isGlobal: false },
         },
         globalMediaHotkeys: true,
     },
@@ -2946,10 +2946,41 @@ export const useSettingsStore = createWithEqualityFn<SettingsSlice>()(
                     }
                 }
 
+                if (version < 36) {
+                    // These bindings were marked global-capable but the main process has no
+                    // action for them, so ticking the box grabbed the accelerator OS-wide and
+                    // then did nothing. Clear both flags for anyone who already ticked one.
+                    const notGloballyActionable = [
+                        'favoriteCurrentAdd',
+                        'favoriteCurrentRemove',
+                        'favoriteCurrentToggle',
+                        'favoritePreviousAdd',
+                        'favoritePreviousRemove',
+                        'favoritePreviousToggle',
+                        'rate0',
+                        'rate1',
+                        'rate2',
+                        'rate3',
+                        'rate4',
+                        'rate5',
+                        'zoomIn',
+                        'zoomOut',
+                    ];
+
+                    for (const binding of notGloballyActionable) {
+                        const entry = state.hotkeys?.bindings?.[binding as BindingActions];
+
+                        if (entry) {
+                            entry.allowGlobal = false;
+                            entry.isGlobal = false;
+                        }
+                    }
+                }
+
                 return persistedState;
             },
             name: 'store_settings',
-            version: 35,
+            version: 36,
         },
     ),
 );
