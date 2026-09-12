@@ -17,6 +17,7 @@ import {
     useSynchronizedLyricsBase,
 } from '/@/renderer/features/lyrics/hooks/use-synchronized-lyrics-base';
 import { LyricLine } from '/@/renderer/features/lyrics/lyric-line';
+import { isSeek } from '/@/renderer/features/lyrics/utils/seek-detect';
 import { subscribePlayerStatus, usePlayerStoreBase } from '/@/renderer/store';
 import { subscribePlayerProgress, useTimestampStoreBase } from '/@/renderer/store/timestamp.store';
 import {
@@ -80,7 +81,14 @@ export const SynchronizedLyrics = ({
     const normalizedLyrics = useMemo(() => normalizeLyrics(lyrics), [lyrics]);
     const rafRef = useRef<null | number>(null);
     const statusRef = useRef(usePlayerStoreBase.getState().player.status);
-    const lastSyncedTimeRef = useRef(0);
+    // The previous progress sample, media time and wall time together. It is both the seek
+    // detector's reference point and the interpolation origin for the RAF loop, which is why it
+    // replaces the old lastSyncedTimeRef: one value, updated in one place.
+    const playbackAnchorRef = useRef({
+        // eslint-disable-next-line react-hooks/purity
+        eventCreationTime: Date.now(),
+        timeMs: useTimestampStoreBase.getState().timestamp * 1000,
+    });
 
     const {
         rebuildLyricsData,
@@ -103,17 +111,30 @@ export const SynchronizedLyrics = ({
     });
 
     const syncAtTime = useCallback(
-        (timeInMs: number, isPlaying: boolean, forceReset = false) => {
-            if (forceReset) {
+        (
+            timeInMs: number,
+            isPlaying: boolean,
+            options?: { eventCreationTime?: number; forceReset?: boolean; forceResync?: boolean },
+        ) => {
+            if (options?.forceReset) {
                 reset();
                 rebuildLyricsData();
             }
 
-            tick(timeInMs, isPlaying);
-            lastSyncedTimeRef.current = timeInMs;
+            tick(timeInMs, isPlaying, {
+                eventCreationTime: options?.eventCreationTime ?? Date.now(),
+                forceResync: options?.forceResync ?? false,
+            });
         },
         [rebuildLyricsData, reset, tick],
     );
+
+    const updatePlaybackAnchor = useCallback((timestampSec: number) => {
+        playbackAnchorRef.current = {
+            eventCreationTime: Date.now(),
+            timeMs: timestampSec * 1000,
+        };
+    }, []);
 
     const stopRaf = useCallback(() => {
         if (rafRef.current !== null) {
@@ -131,32 +152,36 @@ export const SynchronizedLyrics = ({
                 return;
             }
 
-            const timestamp = useTimestampStoreBase.getState().timestamp;
-            const timeInMs = timestamp * 1000 + delayMsRef.current;
+            // Interpolate from the anchor instead of re-reading the store. The store only moves
+            // every ~500 ms on the mpv path, so reading it per frame made lyrics advance in
+            // visible steps. Seek detection lives in the progress subscriber, which is the only
+            // place that sees a new sample, so there is no seek branch here.
+            const anchor = playbackAnchorRef.current;
+            const timeInMs = anchor.timeMs + delayMsRef.current;
 
-            if (Math.abs(timeInMs - lastSyncedTimeRef.current) > SEEK_DETECT_THRESHOLD_MS) {
-                resumeAutoscroll();
-                resumeEngineAutoscroll();
-                syncAtTime(timeInMs, true, true);
-            } else {
-                syncAtTime(timeInMs, true);
-            }
+            syncAtTime(timeInMs, true, { eventCreationTime: anchor.eventCreationTime });
 
             rafRef.current = requestAnimationFrame(runTick);
         };
 
         rafRef.current = requestAnimationFrame(runTick);
-    }, [delayMsRef, resumeAutoscroll, resumeEngineAutoscroll, stopRaf, syncAtTime]);
+    }, [delayMsRef, stopRaf, syncAtTime]);
 
     const syncFromCurrentTimestamp = useCallback(() => {
         const timestamp = useTimestampStoreBase.getState().timestamp;
         const isPlaying = statusRef.current === PlayerStatus.PLAYING;
-        syncAtTime(timestamp * 1000 + delayMsRef.current, isPlaying, true);
-    }, [delayMsRef, syncAtTime]);
+        updatePlaybackAnchor(timestamp);
+        syncAtTime(timestamp * 1000 + delayMsRef.current, isPlaying, {
+            forceReset: true,
+            forceResync: true,
+        });
+    }, [delayMsRef, syncAtTime, updatePlaybackAnchor]);
 
     useEffect(() => {
         lyricRef.current = normalizedLyrics;
-        lastSyncedTimeRef.current = 0;
+        // Re-stamp rather than zero it: a zeroed anchor would make the first sample after a
+        // track change look like a seek of the whole elapsed position.
+        updatePlaybackAnchor(useTimestampStoreBase.getState().timestamp);
 
         const frame = requestAnimationFrame(() => {
             rebuildLyricsData();
@@ -181,6 +206,7 @@ export const SynchronizedLyrics = ({
         startRaf,
         stopRaf,
         syncFromCurrentTimestamp,
+        updatePlaybackAnchor,
     ]);
 
     useEffect(() => {
@@ -199,11 +225,15 @@ export const SynchronizedLyrics = ({
                 return;
             }
 
+            // The anchor goes stale while paused (the mpv poll only runs while PLAYING), so it
+            // must be re-stamped before the RAF loop starts interpolating from it. Without this
+            // the first resumed frame adds the entire pause duration to the lyrics position.
+            updatePlaybackAnchor(useTimestampStoreBase.getState().timestamp);
             startRaf();
         });
 
         return unsubscribe;
-    }, [startRaf, stopRaf, syncFromCurrentTimestamp]);
+    }, [startRaf, stopRaf, syncFromCurrentTimestamp, updatePlaybackAnchor]);
 
     useEffect(() => {
         const unsubscribe = subscribePlayerProgress(({ timestamp }) => {
@@ -211,19 +241,30 @@ export const SynchronizedLyrics = ({
             const isPlaying = statusRef.current === PlayerStatus.PLAYING;
 
             if (!isPlaying) {
-                syncAtTime(timeInMs, false, true);
+                updatePlaybackAnchor(timestamp);
+                syncAtTime(timeInMs, false, { forceReset: true, forceResync: true });
                 return;
             }
 
-            if (Math.abs(timeInMs - lastSyncedTimeRef.current) > SEEK_DETECT_THRESHOLD_MS) {
+            // Compare the media delta against the wall delta before moving the anchor. The delay
+            // offset cancels out, so it is left out of both. Scaling by speed keeps a 2x playback
+            // rate from reading as a permanent seek.
+            const previous = playbackAnchorRef.current;
+            const mediaDeltaMs = timestamp * 1000 - previous.timeMs;
+            const speed = usePlayerStoreBase.getState().player.speed || 1;
+            const wallDeltaMs = (Date.now() - previous.eventCreationTime) * speed;
+
+            updatePlaybackAnchor(timestamp);
+
+            if (isSeek(mediaDeltaMs, wallDeltaMs, SEEK_DETECT_THRESHOLD_MS)) {
                 resumeAutoscroll();
                 resumeEngineAutoscroll();
-                syncAtTime(timeInMs, true, true);
+                syncAtTime(timeInMs, true, { forceReset: true, forceResync: true });
             }
         });
 
         return unsubscribe;
-    }, [delayMsRef, resumeAutoscroll, resumeEngineAutoscroll, syncAtTime]);
+    }, [delayMsRef, resumeAutoscroll, resumeEngineAutoscroll, syncAtTime, updatePlaybackAnchor]);
 
     const handleContainerClick = useCallback(
         (event: React.MouseEvent<HTMLDivElement>) => {

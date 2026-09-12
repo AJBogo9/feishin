@@ -3,6 +3,7 @@ import isElectron from 'is-electron';
 
 import { api } from '/@/renderer/api';
 import { queryKeys } from '/@/renderer/api/query-keys';
+import { parseLrc } from '/@/renderer/features/lyrics/api/lrc-parse';
 import { getDefaultStructuredIndex } from '/@/renderer/features/lyrics/api/lyrics-utils';
 import { queryClient, QueryHookArgs } from '/@/renderer/lib/react-query';
 import { getServerById, useSettingsStore } from '/@/renderer/store';
@@ -38,28 +39,12 @@ export type LyricsQueryResult = {
     suppressRemoteAuto: boolean;
 };
 
-// Match LRC lyrics format by https://github.com/ustbhuangyi/lyric-parser
-// [mm:ss.SSS] text
-const timeExp = /\[(\d{2,}):(\d{2})(?:\.(\d{2,3}))?]([^\n]+)(\n|$)/g;
-
 // Match karaoke lyrics format returned by NetEase
 // [SSS,???] text
 const alternateTimeExp = /\[(\d*),(\d*)]([^\n]+)(\n|$)/g;
 
 const formatLyrics = (lyrics: string) => {
-    const synchronizedLines = lyrics.matchAll(timeExp);
-    const formattedLyrics: SynchronizedLyrics = [];
-
-    for (const line of synchronizedLines) {
-        const [, minute, sec, ms, text] = line;
-        const minutes = parseInt(minute, 10);
-        const seconds = parseInt(sec, 10);
-        const milis = ms?.length === 3 ? parseInt(ms, 10) : parseInt(ms, 10) * 10;
-
-        const timeInMilis = (minutes * 60 + seconds) * 1000 + milis;
-
-        formattedLyrics.push({ startMs: timeInMilis, text });
-    }
+    const formattedLyrics: SynchronizedLyrics = parseLrc(lyrics);
 
     if (formattedLyrics.length > 0) return formattedLyrics;
 
