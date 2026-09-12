@@ -10,21 +10,12 @@ export const createColumnCellComponent = (
     columnType: TableColumn,
     itemType: LibraryItem,
 ): React.ComponentType<CellComponentProps<TableItemProps>> => {
-    return React.memo(
-        (props: CellComponentProps<TableItemProps>) => {
-            return <ItemTableListColumn {...props} columnType={columnType} itemType={itemType} />;
-        },
-        (prevProps, nextProps) => {
-            return (
-                prevProps.rowIndex === nextProps.rowIndex &&
-                prevProps.columnIndex === nextProps.columnIndex &&
-                prevProps.data === nextProps.data &&
-                prevProps.style === nextProps.style &&
-                prevProps.columns === nextProps.columns &&
-                prevProps.playlistId === nextProps.playlistId
-            );
-        },
-    );
+    // No custom comparator: its terms were a strict subset of ItemTableListColumn's own
+    // memo, so it could only bail where that one already bails, or unsoundly. The single
+    // sound gate lives there; this memo just avoids re-creating the element.
+    return React.memo((props: CellComponentProps<TableItemProps>) => {
+        return <ItemTableListColumn {...props} columnType={columnType} itemType={itemType} />;
+    });
 };
 
 export const createColumnCellComponents = (

@@ -371,7 +371,12 @@ export const ItemTableListColumn = memo(ItemTableListColumnBase, (prevProps, nex
         prevProps.columnIndex === nextProps.columnIndex &&
         prevProps.data === nextProps.data &&
         prevProps.columns === nextProps.columns &&
-        prevProps.style === nextProps.style &&
+        // react-window v2 allocates a fresh style object per cell on every render (it has
+        // no itemStyleCache like v1), so identity never matches. Only these three fields
+        // vary per cell; position/left/right are constant per grid.
+        prevProps.style?.transform === nextProps.style?.transform &&
+        prevProps.style?.height === nextProps.style?.height &&
+        prevProps.style?.width === nextProps.style?.width &&
         prevProps.columnType === nextProps.columnType &&
         prevProps.itemType === nextProps.itemType &&
         prevProps.enableHeader === nextProps.enableHeader &&
@@ -390,6 +395,13 @@ export const ItemTableListColumn = memo(ItemTableListColumnBase, (prevProps, nex
         prevProps.enableColumnReorder === nextProps.enableColumnReorder &&
         prevProps.cellPadding === nextProps.cellPadding &&
         prevProps.playlistId === nextProps.playlistId &&
+        // Group-header rows have prevItem === nextItem === null, so without these the
+        // header would never re-render when its group data changes.
+        prevProps.getGroupRenderData === nextProps.getGroupRenderData &&
+        prevProps.albumGroupContentHeights === nextProps.albumGroupContentHeights &&
+        prevProps.albumGroupImageSize === nextProps.albumGroupImageSize &&
+        prevProps.albumGroupVerticalLayout === nextProps.albumGroupVerticalLayout &&
+        prevProps.estimatedAlbumGroupContentHeight === nextProps.estimatedAlbumGroupContentHeight &&
         prevItem === nextItem
     );
 });
