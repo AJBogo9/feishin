@@ -383,7 +383,12 @@ export const contract = c.router({
     },
 });
 
-const axiosClient = axios.create({});
+// 30s: bounds a server that accepts the connection but never answers (a proxy up with the
+// backend down, a half-open VPN), which otherwise hung the startup spinner forever with no
+// way out. Generous enough for the first page of a large library over a slow link.
+const REQUEST_TIMEOUT_MS = 30000;
+
+const axiosClient = axios.create({ timeout: REQUEST_TIMEOUT_MS });
 
 axiosClient.defaults.paramsSerializer = (params) => {
     return qs.stringify(params, { arrayFormat: 'repeat' });
@@ -575,7 +580,13 @@ export const ssApiClient = (args: {
                 };
             } catch (e: any | AxiosError | Error) {
                 if (isAxiosError(e)) {
-                    if (e.code === 'ERR_NETWORK') {
+                    // A timeout is a transport failure too: route it to the same network
+                    // path so the app offers the no-network screen instead of hanging.
+                    if (
+                        e.code === 'ERR_NETWORK' ||
+                        e.code === 'ECONNABORTED' ||
+                        e.code === 'ETIMEDOUT'
+                    ) {
                         throw new Error(i18n.t('error.networkError') as string);
                     }
 
