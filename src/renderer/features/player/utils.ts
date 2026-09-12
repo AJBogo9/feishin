@@ -341,7 +341,9 @@ const getSongFieldValue = (song: Song, field: string): boolean | null | number |
         case 'artist':
             return song.artistName || song.artists[0]?.name || '';
         case 'duration':
-            return song.duration;
+            // Song.duration is milliseconds; the filter UI is in seconds. Floor to match the
+            // truncation the track list displays.
+            return Math.floor(song.duration / 1000);
         case 'favorite':
             return song.userFavorite;
         case 'genre':
@@ -401,7 +403,9 @@ const matchesFilter = (song: Song, filter: PlayerFilter): boolean => {
         case 'startsWith':
             return String(songValue).toLowerCase().startsWith(String(filterValue).toLowerCase());
         default:
-            return true;
+            // matchesFilter answers "does this song match, and therefore get excluded", so an
+            // operator the comparator does not implement must not exclude anything.
+            return false;
     }
 };
 

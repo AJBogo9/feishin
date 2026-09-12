@@ -9,13 +9,18 @@ import { createWithEqualityFn } from 'zustand/traditional';
 import { eventEmitter } from '/@/renderer/events/event-emitter';
 import { useRadioStore as useRadioPlayerStore } from '/@/renderer/features/radio/hooks/use-radio-player';
 import { createSelectors } from '/@/renderer/lib/zustand';
+import { resolveRemovalSuccessor } from '/@/renderer/store/queue-removal';
 import { useSettingsStore } from '/@/renderer/store/settings.store';
 import {
     setTimestamp as setTimestampStore,
     useTimestampStoreBase,
 } from '/@/renderer/store/timestamp.store';
 import { migratePlayerStorePersist, playerStoreStorage } from '/@/renderer/store/utils';
-import { shuffleInPlace } from '/@/renderer/utils/shuffle';
+import {
+    shuffledIndexesAnchoredAt,
+    shuffledInsertPosition,
+    shuffleInPlace,
+} from '/@/renderer/utils/shuffle';
 import { PlayerData, QueueData, QueueSong, Song } from '/@/shared/types/domain-types';
 import {
     CrossfadeStyle,
@@ -332,13 +337,31 @@ function generateShuffledIndexes(length: number): number[] {
 }
 
 // Helper function to regenerate shuffled indexes if shuffle is enabled
-function regenerateShuffledIndexesIfNeeded(state: {
-    player: { shuffle: PlayerShuffle };
-    queue: { default: string[]; shuffled: number[] };
-}): void {
-    if (isShuffleEnabled(state)) {
-        state.queue.shuffled = generateShuffledIndexes(state.queue.default.length);
+function regenerateShuffledIndexesIfNeeded(
+    state: {
+        player: { index: number; shuffle: PlayerShuffle };
+        queue: { default: string[]; shuffled: number[] };
+    },
+    anchorUniqueId?: string,
+): void {
+    if (!isShuffleEnabled(state)) {
+        return;
     }
+
+    const anchorIndex = anchorUniqueId
+        ? state.queue.default.findIndex((id) => id === anchorUniqueId)
+        : -1;
+
+    if (anchorIndex === -1) {
+        state.queue.shuffled = generateShuffledIndexes(state.queue.default.length);
+        return;
+    }
+
+    // player.index is a position in queue.shuffled, so a fresh permutation has to keep the
+    // playing track addressable. Anchoring it at position 0 does that and leaves the rest
+    // of the queue upcoming, matching toggleShuffle.
+    state.queue.shuffled = shuffledIndexesAnchoredAt(state.queue.default.length, anchorIndex);
+    state.player.index = 0;
 }
 
 const initialState: State = {
@@ -440,10 +463,11 @@ export const usePlayerStoreBase = createWithEqualityFn<PlayerState>()(
                                     state.queue.songs[item._uniqueId] = item;
                                 });
 
-                                const insertPosition =
-                                    state.player.shuffle === PlayerShuffle.TRACK
-                                        ? state.queue.shuffled[currentShuffledIndex] + 1
-                                        : currentShuffledIndex + 1;
+                                const insertPosition = shuffledInsertPosition(
+                                    currentShuffledIndex,
+                                    state.queue.shuffled,
+                                    state.queue.default.length,
+                                );
 
                                 state.queue.default = [
                                     ...state.queue.default.slice(0, insertPosition),
@@ -486,9 +510,11 @@ export const usePlayerStoreBase = createWithEqualityFn<PlayerState>()(
                                 // Shuffle the new items before inserting
                                 const shuffledIds = shuffleInPlace([...newUniqueIds]);
 
-                                const insertPosition = isShuffleEnabled(state)
-                                    ? state.queue.shuffled[currentShuffledIndex] + 1
-                                    : currentShuffledIndex + 1;
+                                const insertPosition = shuffledInsertPosition(
+                                    currentShuffledIndex,
+                                    state.queue.shuffled,
+                                    state.queue.default.length,
+                                );
 
                                 state.queue.default = [
                                     ...state.queue.default.slice(0, insertPosition),
@@ -737,8 +763,27 @@ export const usePlayerStoreBase = createWithEqualityFn<PlayerState>()(
                     });
                 },
                 clearSelected: (items: QueueSong[]) => {
+                    let currentRemoved = false;
+                    let successorId: string | undefined;
+                    let newIndex = -1;
+
                     set((state) => {
                         const uniqueIds = new Set(items.map((item) => item._uniqueId));
+
+                        // Resolve the successor in PLAY order before anything is mutated:
+                        // player.index lives in shuffled space, and queue.shuffled is about to
+                        // be rebuilt below.
+                        const playOrder = isShuffleEnabled(state)
+                            ? state.queue.shuffled.map((idx) => state.queue.default[idx])
+                            : state.queue.default.slice();
+                        const removal = resolveRemovalSuccessor(
+                            playOrder,
+                            state.player.index,
+                            uniqueIds,
+                        );
+
+                        currentRemoved = removal.currentRemoved;
+                        successorId = removal.successor;
 
                         const indexesToRemove = new Set<number>();
 
@@ -773,8 +818,49 @@ export const usePlayerStoreBase = createWithEqualityFn<PlayerState>()(
 
                         cleanupOrphanedSongs(state);
 
-                        recalculatePlayerIndex(state, state.queue.default);
+                        if (!currentRemoved) {
+                            recalculatePlayerIndex(state, state.queue.default);
+                        } else {
+                            // The playing track is gone, so point at its successor rather than
+                            // letting findIndex return -1 and pin index 0 (a different song).
+                            const qIdx =
+                                successorId === undefined
+                                    ? -1
+                                    : state.queue.default.indexOf(successorId);
+
+                            state.player.index =
+                                qIdx === -1
+                                    ? -1
+                                    : isShuffleEnabled(state)
+                                      ? (findShuffledPositionForQueueIndex(
+                                            qIdx,
+                                            state.queue.shuffled,
+                                        ) ?? qIdx)
+                                      : qIdx;
+                            newIndex = state.player.index;
+
+                            if (newIndex >= 0) {
+                                setTimestampStore(0);
+                            }
+                        }
                     });
+
+                    // After set(), so listeners read committed state. Without this the engine
+                    // keeps playing the removed file while the UI shows the successor.
+                    if (
+                        currentRemoved &&
+                        newIndex >= 0 &&
+                        !useRadioPlayerStore.getState().currentStreamUrl
+                    ) {
+                        const status = get().player.status;
+
+                        if (status === PlayerStatus.PLAYING || status === PlayerStatus.PAUSED) {
+                            eventEmitter.emit('PLAYER_PLAY', {
+                                id: get().getCurrentSong()?._uniqueId ?? '',
+                                index: newIndex,
+                            });
+                        }
+                    }
                 },
                 decreaseVolume: (value: number) => {
                     set((state) => {
@@ -1316,10 +1402,10 @@ export const usePlayerStoreBase = createWithEqualityFn<PlayerState>()(
                     });
                 },
                 mediaSkipForward: (offset?: number) => {
-                    const state = get();
-                    const queue = state.getQueue();
-                    const index = state.player.index;
-                    const currentTrack = queue.items[index];
+                    // getCurrentSong maps through queue.shuffled; reading
+                    // queue.items[player.index] directly picks the wrong track when
+                    // shuffle is on.
+                    const currentTrack = get().getCurrentSong();
                     const duration = currentTrack?.duration;
                     const offsetFromSettings =
                         useSettingsStore.getState().general.skipButtons.skipForwardSeconds;
@@ -1330,7 +1416,11 @@ export const usePlayerStoreBase = createWithEqualityFn<PlayerState>()(
                     }
 
                     const currentTimestamp = useTimestampStoreBase.getState().timestamp;
-                    const newTimestamp = Math.min(duration - 1, currentTimestamp + timeToSkip);
+                    // Deliberately unclamped: seeking past the end ends the file and the
+                    // queue advances, which is the existing behaviour and what the MPRIS
+                    // Seek contract expects. The previous Math.min compared seconds
+                    // against a millisecond duration, so it never bound anyway.
+                    const newTimestamp = currentTimestamp + timeToSkip;
 
                     // See mediaSkipBackward: update the timestamp store right away to
                     // avoid the stale-read left by the ~500ms engine poll.
@@ -1436,7 +1526,11 @@ export const usePlayerStoreBase = createWithEqualityFn<PlayerState>()(
                             state.queue.songs[item._uniqueId] = item;
                         });
 
-                        const currentIndex = state.player.index;
+                        // idx below indexes queue.default, so player.index has to be
+                        // mapped out of shuffled space before they are compared.
+                        const currentIndex = isShuffleEnabled(state)
+                            ? mapShuffledToQueueIndex(state.player.index, state.queue.shuffled)
+                            : state.player.index;
                         let beforeCurrent = 0;
                         const filtered = state.queue.default.filter((id, idx) => {
                             const shouldMove = uniqueIds.includes(id);
@@ -1485,20 +1579,43 @@ export const usePlayerStoreBase = createWithEqualityFn<PlayerState>()(
                     const newItems = items.map(toQueueSong);
                     const newUniqueIds = newItems.map((item) => item._uniqueId);
 
+                    // index arrives from the server queue, so it cannot be trusted as a
+                    // position in the queue we just built (Navidrome types it as a plain
+                    // number and the Subsonic path can yield -1).
+                    const startIndex =
+                        index !== undefined &&
+                        Number.isInteger(index) &&
+                        index >= 0 &&
+                        index < newUniqueIds.length
+                            ? index
+                            : 0;
+
                     set((state) => {
                         newItems.forEach((item) => {
                             state.queue.songs[item._uniqueId] = item;
                         });
 
-                        state.player.index = index ?? 0;
                         state.player.status = PlayerStatus.PLAYING;
                         state.player.playerNum = 1;
                         state.queue.default = newUniqueIds;
+
+                        // queue.shuffled holds indexes into the PREVIOUS queue.default, so
+                        // leaving it in place would point playback at unrelated tracks.
+                        if (state.player.shuffle === PlayerShuffle.TRACK) {
+                            state.queue.shuffled = shuffledIndexesAnchoredAt(
+                                newUniqueIds.length,
+                                startIndex,
+                            );
+                            state.player.index = 0;
+                        } else {
+                            state.queue.shuffled = [];
+                            state.player.index = startIndex;
+                        }
                     });
 
                     eventEmitter.emit('QUEUE_RESTORED', {
                         data: items,
-                        index: index ?? 0,
+                        index: startIndex,
                         position: position ?? 0,
                     });
                 },
@@ -1592,12 +1709,13 @@ export const usePlayerStoreBase = createWithEqualityFn<PlayerState>()(
                 },
                 shuffleAll: () => {
                     set((state) => {
-                        const queue = state.getQueue();
-                        const currentIndex = state.player.index;
-                        const currentSong = queue.items[currentIndex];
+                        // getCurrentSong maps player.index through queue.shuffled; indexing
+                        // the default-ordered queue with it pinned the wrong song when
+                        // shuffle was on.
+                        const currentSong = state.getCurrentSong();
 
                         // If there's a current song playing, keep it in place
-                        if (currentSong && currentIndex >= 0 && currentIndex < queue.items.length) {
+                        if (currentSong) {
                             const currentUniqueId = currentSong._uniqueId;
                             const currentQueueIndex = state.queue.default.findIndex(
                                 (id) => id === currentUniqueId,
@@ -1624,8 +1742,10 @@ export const usePlayerStoreBase = createWithEqualityFn<PlayerState>()(
                             state.queue.default = shuffleInPlace([...state.queue.default]);
                         }
 
-                        // Regenerate shuffled indexes if shuffle is enabled
-                        regenerateShuffledIndexesIfNeeded(state);
+                        // Regenerate shuffled indexes if shuffle is enabled, keeping the
+                        // playing track addressable instead of leaving player.index pointing
+                        // into a permutation it no longer belongs to.
+                        regenerateShuffledIndexesIfNeeded(state, currentSong?._uniqueId);
                     });
                 },
                 shuffleSelected: (items: QueueSong[]) => {
@@ -1656,10 +1776,12 @@ export const usePlayerStoreBase = createWithEqualityFn<PlayerState>()(
                             newDefaultQueue[pos] = shuffledItems[i];
                         });
 
+                        // Same choke point the move/remove actions use: it resolves the
+                        // playing track and re-points player.index at it. The existing
+                        // permutation stays valid because only the contents of existing
+                        // positions are permuted, so no regeneration is needed here.
+                        recalculatePlayerIndex(state, newDefaultQueue);
                         state.queue.default = newDefaultQueue;
-
-                        // Regenerate shuffled indexes if shuffle is enabled
-                        regenerateShuffledIndexesIfNeeded(state);
                     });
                 },
                 toggleRepeat: () => {
@@ -2386,7 +2508,12 @@ function recalculatePlayerIndex(state: any, queue: string[]) {
     }
 
     const index = queue.findIndex((id) => id === currentTrack._uniqueId);
-    state.player.index = Math.max(0, index);
+
+    // player.index is a position in queue.shuffled when shuffle is on (see
+    // getCurrentSong), so a plain-queue index must be converted before it is stored.
+    state.player.index = isShuffleEnabled(state)
+        ? (findShuffledPositionForQueueIndex(index, state.queue.shuffled) ?? Math.max(0, index))
+        : Math.max(0, index);
 }
 
 function toQueueSong(item: Song): QueueSong {
