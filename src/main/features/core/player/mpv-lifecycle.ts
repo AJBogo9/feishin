@@ -46,7 +46,7 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * reply timeout. A wedged mpv (typically blocked on a stream that died while the machine was
  * asleep) would otherwise hang the caller forever, which is what leaves the window unclosable.
  */
-const settleOrTimeout = async (work: Promise<unknown>, ms: number): Promise<boolean> => {
+export const settleOrTimeout = async (work: Promise<unknown>, ms: number): Promise<boolean> => {
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<boolean>((resolve) => {
         timer = setTimeout(() => resolve(false), ms);

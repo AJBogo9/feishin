@@ -18,6 +18,8 @@ import {
     usePlayerStore,
     useSettingsStore,
 } from '/@/renderer/store';
+import { useTimestampStoreBase } from '/@/renderer/store/timestamp.store';
+import { logger } from '/@/renderer/utils/logger';
 import { PlayerStatus } from '/@/shared/types/types';
 
 export interface MpvPlayerEngineHandle extends AudioPlayer {}
@@ -146,19 +148,39 @@ export const MpvPlayerEngine = (props: MpvPlayerEngineProps) => {
             const radioState = useRadioStore.getState();
 
             if (!radioState.currentStreamUrl) {
-                const playerData = usePlayerStore.getState().getPlayerData();
-                const currentSongUrl = playerData.currentSong
-                    ? await getSongUrl(playerData.currentSong, transcode, true)
-                    : undefined;
-                const nextSongUrl = playerData.nextSong
-                    ? await getSongUrl(playerData.nextSong, transcode, true)
-                    : undefined;
+                // Isolated from the init above: a throw in getSongUrl here would otherwise
+                // skip setMpvInitialized(true) below, leaving a live mpv process with every
+                // play/pause/volume effect permanently gated off.
+                try {
+                    const playerData = usePlayerStore.getState().getPlayerData();
+                    const currentSongUrl = playerData.currentSong
+                        ? await getSongUrl(playerData.currentSong, transcode, true)
+                        : undefined;
+                    const nextSongUrl = playerData.nextSong
+                        ? await getSongUrl(playerData.nextSong, transcode, true)
+                        : undefined;
 
-                if (currentSongUrl && nextSongUrl && !hasPopulatedQueueRef.current && mpvPlayer) {
-                    const shouldPause =
-                        usePlayerStore.getState().player.status !== PlayerStatus.PLAYING;
-                    mpvPlayer.setQueue(currentSongUrl, nextSongUrl, shouldPause);
-                    hasPopulatedQueueRef.current = true;
+                    // Deliberately not gated on nextSongUrl: on the last queue item with
+                    // repeat off there is no next song, and requiring one left the fresh mpv
+                    // process with an empty playlist while the renderer still read PLAYING.
+                    // The whole chain down to main already accepts an undefined next url.
+                    if (currentSongUrl && !hasPopulatedQueueRef.current && mpvPlayer) {
+                        const shouldPause =
+                            usePlayerStore.getState().player.status !== PlayerStatus.PLAYING;
+
+                        // Only on a reload (wake from sleep, device/settings change): resume
+                        // where the track was instead of restarting it at 0:00. The first
+                        // mount is left alone so the startup restore path still owns it.
+                        const resumeAt =
+                            reloadTrigger > 0
+                                ? useTimestampStoreBase.getState().timestamp
+                                : undefined;
+
+                        mpvPlayer.setQueue(currentSongUrl, nextSongUrl, shouldPause, resumeAt);
+                        hasPopulatedQueueRef.current = true;
+                    }
+                } catch (error) {
+                    logger.error('Failed to populate the initial mpv queue', { error });
                 }
             }
 
@@ -429,5 +451,8 @@ async function replaceMpvQueue(transcode: {
     const nextSongUrl = playerData.nextSong
         ? await getSongUrl(playerData.nextSong, transcode, true)
         : undefined;
-    mpvPlayer?.setQueue(currentSongUrl, nextSongUrl, false);
+    // Read the status fresh, after the awaits above: hardcoding false made next/previous
+    // resume playback from a paused state. playerData was snapshotted before the awaits.
+    const shouldPause = usePlayerStore.getState().player.status !== PlayerStatus.PLAYING;
+    mpvPlayer?.setQueue(currentSongUrl, nextSongUrl, shouldPause);
 }

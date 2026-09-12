@@ -14,6 +14,7 @@ import {
     destroyMpv,
     killMpvChild,
     MpvCreateData,
+    settleOrTimeout,
 } from './mpv-lifecycle';
 
 import { isMacOS, isWindows } from '/@/main/env';
@@ -467,52 +468,75 @@ ipcMain.on('player-seek-to', async (_event, time: number) => {
 });
 
 // Sets the queue in position 0 and 1 to the given data. Used when manually starting a song or using the next/prev buttons
-ipcMain.on('player-set-queue', async (_event, current?: string, next?: string, pause?: boolean) => {
-    if (!current && !next) {
-        try {
-            await getMpvInstance()?.clearPlaylist();
-            await getMpvInstance()?.pause();
-            return;
-        } catch (err: any | NodeMpvError) {
-            mpvLog({ action: `Failed to clear play queue` }, err);
-        }
-    }
-
-    // When pause is requested (e.g. preload after reload while UI is STOPPED/PAUSED), mpv still
-    // briefly resumes on load. Suppress those events so they do not overwrite renderer status.
-    const shouldSuppressLoadEvents = pause === true;
-    if (shouldSuppressLoadEvents) {
-        suppressRendererPlaybackEvents = true;
-    }
-
-    try {
-        if (current) {
+ipcMain.on(
+    'player-set-queue',
+    async (_event, current?: string, next?: string, pause?: boolean, start?: number) => {
+        if (!current && !next) {
             try {
-                await getMpvInstance()?.load(current, 'replace');
-            } catch (error: any | NodeMpvError) {
-                mpvLog({ action: `Failed to load current song` }, error);
+                await getMpvInstance()?.clearPlaylist();
+                await getMpvInstance()?.pause();
+                return;
+            } catch (err: any | NodeMpvError) {
+                mpvLog({ action: `Failed to clear play queue` }, err);
+            }
+        }
+
+        // When pause is requested (e.g. preload after reload while UI is STOPPED/PAUSED), mpv
+        // still briefly resumes on load. Suppress those events so they do not overwrite
+        // renderer status.
+        const shouldSuppressLoadEvents = pause === true;
+        if (shouldSuppressLoadEvents) {
+            suppressRendererPlaybackEvents = true;
+        }
+
+        try {
+            if (current) {
+                let loaded = false;
+
+                try {
+                    await getMpvInstance()?.load(current, 'replace');
+                    loaded = true;
+                } catch (error: any | NodeMpvError) {
+                    mpvLog({ action: `Failed to load current song` }, error);
+
+                    // Do not force playback when the caller asked for pause; the explicit
+                    // `pause === false` branch below still starts it when that is wanted.
+                    if (pause !== true) {
+                        await getMpvInstance()?.play();
+                    }
+                }
+
+                if (next) {
+                    await getMpvInstance()?.load(next, 'append');
+                }
+
+                // Restore the playback position after a reload (wake from sleep, device or
+                // settings change), which otherwise silently restarts the track at 0:00.
+                // Appending first means a slow seek cannot cost the gapless next track.
+                if (loaded && typeof start === 'number' && Number.isFinite(start) && start > 0) {
+                    const instance = getMpvInstance();
+
+                    if (instance && !(await settleOrTimeout(instance.goToPosition(start), 3000))) {
+                        mpvLog({ action: `Timed out restoring position to ${start} seconds` });
+                    }
+                }
+            }
+
+            if (pause) {
+                await getMpvInstance()?.pause();
+            } else if (pause === false) {
+                // Only force play if pause is explicitly false
                 await getMpvInstance()?.play();
             }
-
-            if (next) {
-                await getMpvInstance()?.load(next, 'append');
+        } catch (err: any | NodeMpvError) {
+            mpvLog({ action: `Failed to set play queue` }, err);
+        } finally {
+            if (shouldSuppressLoadEvents) {
+                suppressRendererPlaybackEvents = false;
             }
         }
-
-        if (pause) {
-            await getMpvInstance()?.pause();
-        } else if (pause === false) {
-            // Only force play if pause is explicitly false
-            await getMpvInstance()?.play();
-        }
-    } catch (err: any | NodeMpvError) {
-        mpvLog({ action: `Failed to set play queue` }, err);
-    } finally {
-        if (shouldSuppressLoadEvents) {
-            suppressRendererPlaybackEvents = false;
-        }
-    }
-});
+    },
+);
 
 // Replaces the queue in position 1 to the given data
 ipcMain.on('player-set-queue-next', async (_event, url?: string) => {
@@ -555,7 +579,7 @@ ipcMain.on('player-auto-next', async (_event, url?: string) => {
 // Sets the volume to the given value (0-100)
 ipcMain.on('player-volume', async (_event, value: number) => {
     try {
-        if (!value || value < 0 || value > 100) {
+        if (value == null || Number.isNaN(value) || value < 0 || value > 100) {
             return;
         }
 
@@ -816,18 +840,14 @@ process.on('SIGTERM', async () => {
     process.exit(0);
 });
 
-// Handle uncaught exceptions - cleanup mpv before crashing
-process.on('uncaughtException', async (error) => {
-    log.error('Uncaught exception:', error);
-    await cleanupMpv(true).catch(() => {
-        // Ignore cleanup errors during crash
-    });
+// An uncaught error in main is not fatal (src/main/index.ts installs a log-only
+// uncaughtException handler), so it must not take the user's audio with it: tearing mpv down
+// here stopped playback mid-track while the renderer still showed PLAYING. Orphan mpv stays
+// covered by process.on('exit'), SIGINT/SIGTERM and before-quit, which all still clean up.
+process.on('uncaughtException', (error) => {
+    log.error('Uncaught exception in main process:', error);
 });
 
-// Handle unhandled rejections - cleanup mpv
-process.on('unhandledRejection', async (reason) => {
-    log.error('Unhandled rejection:', reason);
-    await cleanupMpv(true).catch(() => {
-        // Ignore cleanup errors
-    });
+process.on('unhandledRejection', (reason) => {
+    log.error('Unhandled rejection in main process:', reason);
 });
