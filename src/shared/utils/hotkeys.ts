@@ -51,6 +51,25 @@ export const toPhysicalHotkey = (hotkey: string): string =>
 export const withPhysicalKeys = (hotkeys: HotkeyItem[]): HotkeyItem[] =>
     hotkeys.map(([hotkey, handler, options]) => [
         toPhysicalHotkey(hotkey),
-        handler,
-        { ...options, preventDefault: true, usePhysicalKeys: true },
+        (event: KeyboardEvent) => {
+            // Unmodified space/enter activate a focused button natively; don't steal them.
+            // Modified ones don't (ctrl/alt/meta+enter never fires a click), so returning
+            // early there would leave a dead key.
+            const target = event.target as HTMLElement | null;
+            if (
+                (event.code === 'Space' || event.code === 'Enter') &&
+                !event.altKey &&
+                !event.ctrlKey &&
+                !event.metaKey &&
+                target?.tagName === 'BUTTON'
+            ) {
+                return;
+            }
+
+            // Mantine checks shouldFireEvent before preventDefault, so moving
+            // preventDefault here keeps INPUT/TEXTAREA/SELECT/contentEditable untouched.
+            event.preventDefault();
+            handler(event);
+        },
+        { ...options, preventDefault: false, usePhysicalKeys: true },
     ]);
