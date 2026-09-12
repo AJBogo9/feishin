@@ -59,31 +59,54 @@ export function useNativeImage({
             loadedRequestSignatureRef.current = null;
         };
 
+        // Every branch below returns the CURRENT state object when nothing actually changed.
+        // React only bails out of a re-render when the new state is referentially equal, so
+        // allocating a fresh object each run made this effect re-render its component every
+        // time it ran. With `enabled` flipping as rows enter and leave the viewport during a
+        // fast scroll, that became a self-sustaining loop and blew React's nested-update limit
+        // ("Maximum update depth exceeded"), taking the whole list down to an error boundary.
         if (!request || !requestSignature) {
             abortCurrentRequest();
             revokeObjectUrl();
-            setState({ status: 'idle' });
-            return;
-        }
-
-        if (!enabled) {
-            abortCurrentRequest();
             setState((currentState) =>
-                currentState.displaySrc
-                    ? { ...currentState, status: 'loaded' }
+                currentState.status === 'idle' && !currentState.displaySrc
+                    ? currentState
                     : { status: 'idle' },
             );
             return;
         }
 
+        if (!enabled) {
+            abortCurrentRequest();
+            setState((currentState) => {
+                if (currentState.displaySrc) {
+                    return currentState.status === 'loaded'
+                        ? currentState
+                        : { ...currentState, status: 'loaded' };
+                }
+
+                return currentState.status === 'idle' ? currentState : { status: 'idle' };
+            });
+            return;
+        }
+
         if (loadedRequestSignatureRef.current === requestSignature && objectUrlRef.current) {
-            setState({ displaySrc: objectUrlRef.current, status: 'loaded' });
+            const loadedSrc = objectUrlRef.current;
+            setState((currentState) =>
+                currentState.status === 'loaded' && currentState.displaySrc === loadedSrc
+                    ? currentState
+                    : { displaySrc: loadedSrc, status: 'loaded' },
+            );
             return;
         }
 
         abortCurrentRequest();
         revokeObjectUrl();
-        setState({ status: 'loading' });
+        setState((currentState) =>
+            currentState.status === 'loading' && !currentState.displaySrc
+                ? currentState
+                : { status: 'loading' },
+        );
 
         const abortController = new AbortController();
         abortControllerRef.current = abortController;
