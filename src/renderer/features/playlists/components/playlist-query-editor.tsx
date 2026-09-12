@@ -9,6 +9,7 @@ import {
     PlaylistQueryBuilderRef,
 } from '/@/renderer/features/playlists/components/playlist-query-builder';
 import { useUpdatePlaylist } from '/@/renderer/features/playlists/mutations/update-playlist-mutation';
+import { parseRulesJsonToSaveArgs } from '/@/renderer/features/playlists/rules-json';
 import { convertQueryGroupToNDQuery } from '/@/renderer/features/playlists/utils';
 import { JsonPreview } from '/@/renderer/features/shared/components/json-preview';
 import { Box } from '/@/shared/components/box/box';
@@ -77,24 +78,6 @@ const serializeFiltersToRulesJson = (filters: {
     };
 };
 
-const parseRulesJsonToSaveArgs = (
-    parsed: Record<string, any>,
-): {
-    extraFilters: { limit?: number; limitPercent?: number; sortBy?: string[] };
-    filter: Record<string, any>;
-} => {
-    const rootKey = parsed.all ? 'all' : 'any';
-    const filter = rootKey in parsed ? { [rootKey]: parsed[rootKey] } : { all: [] };
-    return {
-        extraFilters: {
-            ...(parsed.limit != null && { limit: parsed.limit }),
-            ...(parsed.limitPercent != null && { limitPercent: parsed.limitPercent }),
-            ...(parsed.sort != null && { sortBy: [parsed.sort] }),
-        },
-        filter,
-    };
-};
-
 export const PlaylistQueryEditor = ({
     detailQuery,
     handleSave,
@@ -141,7 +124,7 @@ export const PlaylistQueryEditor = ({
         const payload = getFiltersForSave();
         if (!payload) {
             if (editorMode === 'json') {
-                toast.error({ message: t('error.invalidJson') });
+                toast.error({ message: t('error.invalidRules') });
             }
             return;
         }
@@ -165,7 +148,7 @@ export const PlaylistQueryEditor = ({
         const payload = getFiltersForSave();
         if (!payload) {
             if (editorMode === 'json') {
-                toast.error({ message: t('error.invalidJson') });
+                toast.error({ message: t('error.invalidRules') });
             }
             return;
         }
@@ -273,20 +256,21 @@ export const PlaylistQueryEditor = ({
             } else {
                 if (editorMode === 'json') {
                     try {
-                        const parsed = JSON.parse(jsonText) as Record<string, any>;
-                        const rootKey = parsed.all ? 'all' : 'any';
-                        if (!parsed[rootKey] || !Array.isArray(parsed[rootKey])) {
-                            throw new Error('Invalid rules structure');
-                        }
+                        // Same validator as the save path, so the two cannot drift: this one
+                        // checked the structure while the save path silently fell back to a
+                        // match-everything query.
+                        const { extraFilters, filter } = parseRulesJsonToSaveArgs(
+                            JSON.parse(jsonText) as Record<string, any>,
+                        );
                         setAppliedJsonState({
-                            limit: parsed.limit,
-                            limitPercent: parsed.limitPercent,
-                            query: { [rootKey]: parsed[rootKey] },
-                            sort: parsed.sort,
+                            limit: extraFilters.limit,
+                            limitPercent: extraFilters.limitPercent,
+                            query: filter,
+                            sort: extraFilters.sortBy?.[0],
                         });
                     } catch {
                         toast.error({
-                            message: t('error.invalidJson'),
+                            message: t('error.invalidRules'),
                         });
                         return;
                     }
@@ -368,7 +352,7 @@ export const PlaylistQueryEditor = ({
                                     handleSaveAs(payload.filter, payload.extraFilters);
                                 } else if (editorMode === 'json') {
                                     toast.error({
-                                        message: t('error.invalidJson'),
+                                        message: t('error.invalidRules'),
                                     });
                                 }
                             }}

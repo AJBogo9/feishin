@@ -71,6 +71,40 @@ export function playlistSongsToAlbums(songs: Song[]): PlaylistAlbumRow[] {
     return rows;
 }
 
+// Hoisted: this was rebuilt per rule, twice per serialization, and serialization runs on every
+// Preview, Save, Save As and builder/JSON toggle.
+const ND_BOOLEAN_FIELDS = new Set(
+    NDSongQueryFields.filter((queryField) => queryField.type === 'boolean').map(
+        (queryField) => queryField.value,
+    ),
+);
+
+/**
+ * Serialize one builder rule into Navidrome query form.
+ *
+ * Shared by the root and nested paths on purpose: the nested serializer used to push rule.value
+ * through untouched while only the root coerced the six boolean fields. The builder stores
+ * booleans as the strings "true"/"false", so a nested Is Favorite / Is Compilation / Has CoverArt
+ * / Missing rule was sent as a string and never matched. The inverse converter stringifies
+ * booleans at every level, so the asymmetry also corrupted a Navidrome-authored playlist on a
+ * plain open-and-save round trip.
+ */
+const serializeRule = (ruleField: string, ruleOperator: string, ruleValue: any) => {
+    const [field, subField] = ruleField.split('.');
+    const operator = mapDatePickerOperatorToApi(ruleOperator);
+    let value: any = subField === 'releaseDate' ? new Date(ruleValue) : ruleValue;
+
+    if (ND_BOOLEAN_FIELDS.has(field)) {
+        value = value === 'true' || value === true;
+    }
+
+    return {
+        [operator]: {
+            [field]: value,
+        },
+    };
+};
+
 export const parseQueryBuilderChildren = (groups: QueryBuilderGroup[], data: any[]) => {
     if (groups.length === 0) {
         return data;
@@ -86,19 +120,7 @@ export const parseQueryBuilderChildren = (groups: QueryBuilderGroup[], data: any
 
         for (const rule of group.rules) {
             if (rule.field && rule.operator) {
-                const [table, field] = rule.field.split('.');
-                const operator = mapDatePickerOperatorToApi(rule.operator);
-                const value = field !== 'releaseDate' ? rule.value : new Date(rule.value);
-
-                switch (table) {
-                    default:
-                        query[rootType].push({
-                            [operator]: {
-                                [table]: value,
-                            },
-                        });
-                        break;
-                }
+                query[rootType].push(serializeRule(rule.field, rule.operator, rule.value));
             }
         }
 
@@ -123,28 +145,7 @@ export const convertQueryGroupToNDQuery = (filter: QueryBuilderGroup) => {
 
     for (const rule of filter.rules) {
         if (rule.field && rule.operator) {
-            const [field] = rule.field.split('.');
-            const operator = mapDatePickerOperatorToApi(rule.operator);
-            let value = rule.value;
-
-            const booleanFields = NDSongQueryFields.filter(
-                (queryField) => queryField.type === 'boolean',
-            ).map((field) => field.value);
-
-            // Convert string values to boolean
-            if (booleanFields.includes(field)) {
-                value = value === 'true';
-            }
-
-            switch (field) {
-                default:
-                    rootQuery[rootQueryType].push({
-                        [operator]: {
-                            [field]: value,
-                        },
-                    });
-                    break;
-            }
+            rootQuery[rootQueryType].push(serializeRule(rule.field, rule.operator, rule.value));
         }
     }
 
@@ -175,13 +176,11 @@ export const convertNDQueryToQueryGroup = (query: Record<string, any>) => {
             const field = Object.keys(rule[operator])[0];
             let value = rule[operator][field];
 
-            const booleanFields = NDSongQueryFields.filter(
-                (queryField) => queryField.type === 'boolean',
-            ).map((field) => field.value);
-
-            // Convert boolean values to string
-            if (booleanFields.includes(field)) {
-                value = value.toString();
+            // Test the value, not the field name. Every boolean-ish control in the builder is a
+            // string Select, so a real boolean on any field (including one Navidrome authored on
+            // a field Feishin does not list as boolean) would otherwise render as a blank box.
+            if (typeof value === 'boolean') {
+                value = String(value);
             }
 
             // Use date-picker operator in UI when value is date-like (e.g. YYYY-MM-DD); otherwise keep API operator

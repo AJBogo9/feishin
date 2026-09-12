@@ -230,6 +230,7 @@
         "endpointNotImplementedError": "Endpoint {{endpoint}} is not implemented for {{serverType}}",
         "genericError": "An error occurred",
         "invalidJson": "Invalid JSON",
+        "invalidRules": "Rules must be valid JSON with exactly one \"all\" or \"any\" array",
         "invalidServer": "Invalid server",
         "localFontAccessDenied": "Access denied to local fonts",
         "loginRateError": "Too many login attempts, please try again in a few seconds",
