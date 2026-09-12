@@ -1,6 +1,7 @@
 import { ErrorBoundary } from 'react-error-boundary';
 import { useTranslation } from 'react-i18next';
 
+import { logBoundaryError } from '/@/renderer/features/shared/components/log-boundary-error';
 import { ServerSelector } from '/@/renderer/features/sidebar/components/server-selector';
 import { Box } from '/@/shared/components/box/box';
 import { Button } from '/@/shared/components/button/button';
@@ -91,9 +92,7 @@ export const RouterErrorBoundary = ({ children }: RouterErrorBoundaryProps) => {
         <ErrorBoundary
             FallbackComponent={RouterErrorFallback}
             onError={(error, errorInfo) => {
-                if (process.env.NODE_ENV === 'development') {
-                    console.error('Root error boundary caught an error:', error, errorInfo);
-                }
+                logBoundaryError('Root error boundary', error, errorInfo);
             }}
             onReset={() => {}}
         >

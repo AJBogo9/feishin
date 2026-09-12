@@ -1,6 +1,7 @@
 import { ErrorBoundary } from 'react-error-boundary';
 import { useTranslation } from 'react-i18next';
 
+import { logBoundaryError } from '/@/renderer/features/shared/components/log-boundary-error';
 import { ServerSelector } from '/@/renderer/features/sidebar/components/server-selector';
 import { Box } from '/@/shared/components/box/box';
 import { Button } from '/@/shared/components/button/button';
@@ -85,9 +86,7 @@ export const PageErrorBoundary = ({ children }: PageErrorBoundaryProps) => {
         <ErrorBoundary
             FallbackComponent={PageErrorFallback}
             onError={(error, errorInfo) => {
-                if (process.env.NODE_ENV === 'development') {
-                    console.error('Page error boundary caught an error:', error, errorInfo);
-                }
+                logBoundaryError('Page error boundary', error, errorInfo);
             }}
             onReset={() => {}}
         >
