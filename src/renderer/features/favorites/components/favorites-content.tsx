@@ -76,7 +76,10 @@ const SongFavorites = () => {
 };
 
 const ArtistFavorites = () => {
-    const { display, grid, itemsPerPage, pagination, table } = useListSettings(ItemListKey.ARTIST);
+    // Renders AlbumArtistListView, so it must read the ALBUM_ARTIST slice.
+    const { display, grid, itemsPerPage, pagination, table } = useListSettings(
+        ItemListKey.ALBUM_ARTIST,
+    );
     const { customFilters } = useListContext();
 
     const albumArtistQuery: OverrideAlbumArtistListQuery = {

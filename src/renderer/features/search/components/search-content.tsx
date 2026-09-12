@@ -84,7 +84,11 @@ const SongSearch = () => {
 };
 
 const ArtistSearch = () => {
-    const { display, grid, itemsPerPage, pagination, table } = useListSettings(ItemListKey.ARTIST);
+    // Renders AlbumArtistListView, so it must read the ALBUM_ARTIST slice; the ARTIST
+    // slice belongs to /library/artists.
+    const { display, grid, itemsPerPage, pagination, table } = useListSettings(
+        ItemListKey.ALBUM_ARTIST,
+    );
     const [searchParams] = useSearchParams();
 
     const albumArtistQuery: OverrideAlbumArtistListQuery = {
