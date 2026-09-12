@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import {
+    NativeImageState,
+    nextNativeImageState,
+    shouldStartNativeImageFetch,
+} from './native-image-state';
+
 import { ImageRequest } from '/@/shared/types/domain-types';
 
 type FetchPriority = 'auto' | 'high' | 'low';
-
-interface NativeImageState {
-    displaySrc?: string;
-    status: 'error' | 'idle' | 'loaded' | 'loading';
-}
 
 interface UseNativeImageArgs {
     enabled: boolean;
@@ -59,54 +60,29 @@ export function useNativeImage({
             loadedRequestSignatureRef.current = null;
         };
 
-        // Every branch below returns the CURRENT state object when nothing actually changed.
-        // React only bails out of a re-render when the new state is referentially equal, so
-        // allocating a fresh object each run made this effect re-render its component every
-        // time it ran. With `enabled` flipping as rows enter and leave the viewport during a
-        // fast scroll, that became a self-sustaining loop and blew React's nested-update limit
-        // ("Maximum update depth exceeded"), taking the whole list down to an error boundary.
-        if (!request || !requestSignature) {
-            abortCurrentRequest();
-            revokeObjectUrl();
-            setState((currentState) =>
-                currentState.status === 'idle' && !currentState.displaySrc
-                    ? currentState
-                    : { status: 'idle' },
-            );
-            return;
-        }
-
-        if (!enabled) {
-            abortCurrentRequest();
-            setState((currentState) => {
-                if (currentState.displaySrc) {
-                    return currentState.status === 'loaded'
-                        ? currentState
-                        : { ...currentState, status: 'loaded' };
-                }
-
-                return currentState.status === 'idle' ? currentState : { status: 'idle' };
-            });
-            return;
-        }
-
-        if (loadedRequestSignatureRef.current === requestSignature && objectUrlRef.current) {
-            const loadedSrc = objectUrlRef.current;
-            setState((currentState) =>
-                currentState.status === 'loaded' && currentState.displaySrc === loadedSrc
-                    ? currentState
-                    : { displaySrc: loadedSrc, status: 'loaded' },
-            );
-            return;
-        }
+        const effectiveSignature = request ? requestSignature : null;
+        const transition = {
+            enabled,
+            loadedSignature: loadedRequestSignatureRef.current,
+            objectUrl: objectUrlRef.current,
+            requestSignature: effectiveSignature,
+        };
+        const startFetch = shouldStartNativeImageFetch(transition);
 
         abortCurrentRequest();
-        revokeObjectUrl();
-        setState((currentState) =>
-            currentState.status === 'loading' && !currentState.displaySrc
-                ? currentState
-                : { status: 'loading' },
-        );
+
+        if (!effectiveSignature || startFetch) {
+            // Nothing to show, or a different image is about to be fetched: the held blob is dead.
+            revokeObjectUrl();
+            transition.loadedSignature = null;
+            transition.objectUrl = null;
+        }
+
+        setState((currentState) => nextNativeImageState(currentState, transition));
+
+        if (!startFetch || !request) {
+            return;
+        }
 
         const abortController = new AbortController();
         abortControllerRef.current = abortController;
