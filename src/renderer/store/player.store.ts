@@ -9,6 +9,7 @@ import { createWithEqualityFn } from 'zustand/traditional';
 import { eventEmitter } from '/@/renderer/events/event-emitter';
 import { useRadioStore as useRadioPlayerStore } from '/@/renderer/features/radio/hooks/use-radio-player';
 import { createSelectors } from '/@/renderer/lib/zustand';
+import { findNextAlbumIndex, findPreviousAlbumIndex } from '/@/renderer/store/album-jump';
 import { resolveRemovalSuccessor } from '/@/renderer/store/queue-removal';
 import { useSettingsStore } from '/@/renderer/store/settings.store';
 import {
@@ -1179,23 +1180,32 @@ export const usePlayerStoreBase = createWithEqualityFn<PlayerState>()(
                     const { shouldStop } = nextIndexProps;
 
                     if (toNextAlbum && !shouldStop) {
-                        const currentItem = queue.items[currentIndex];
-                        const [start, end] = findLastAlbumRange(queue.items);
-                        const isOnLastAlbum = start <= currentIndex && currentIndex <= end;
-                        if (isOnLastAlbum) {
-                            const nextIndexWithNextAlbum = queue.items.findIndex(
-                                (i) => i.albumId !== currentItem.albumId,
-                            );
+                        // The album search runs in queue-index space; player.index is a position
+                        // in the shuffled order whenever shuffle is on. Convert both ways, or the
+                        // jump reads one queue with the other's coordinates.
+                        const currentQueueIndex = isShuffle
+                            ? mapShuffledToQueueIndex(currentIndex, state.queue.shuffled)
+                            : currentIndex;
 
-                            nextIndex = nextIndexWithNextAlbum;
-                        } else {
-                            const queueStartingFromCurrent = queue.items.slice(currentIndex);
-                            const nextIndexWithNextAlbum = queueStartingFromCurrent.findIndex(
-                                (i) => i.albumId !== currentItem.albumId,
-                            );
-                            nextIndex =
-                                nextIndexWithNextAlbum +
-                                (queue.items.length - queueStartingFromCurrent.length);
+                        const targetQueueIndex = findNextAlbumIndex(
+                            queue.items.map((item) => item.albumId),
+                            currentQueueIndex,
+                        );
+
+                        const targetIndex =
+                            targetQueueIndex === -1
+                                ? undefined
+                                : isShuffle
+                                  ? findShuffledPositionForQueueIndex(
+                                        targetQueueIndex,
+                                        state.queue.shuffled,
+                                    )
+                                  : targetQueueIndex;
+
+                        // A single-album queue has no next album. Keep the ordinary next track
+                        // rather than writing -1 into player.index and blanking the player.
+                        if (targetIndex !== undefined) {
+                            nextIndex = targetIndex;
                         }
                     }
 
@@ -1350,10 +1360,34 @@ export const usePlayerStoreBase = createWithEqualityFn<PlayerState>()(
                         // Repeat none: stay on first track if already there
                         previousIndex = currentIndex;
                     } else if (toPreviousAlbum) {
-                        previousIndex = Math.max(
-                            0,
-                            findIndexWithPreviousAlbum(queue.items, currentIndex),
+                        const state = get();
+                        const isShuffle = isShuffleEnabled(state);
+
+                        // Same coordinate conversion as mediaNext: search the default queue, then
+                        // map the answer back into playback order.
+                        const currentQueueIndex = isShuffle
+                            ? mapShuffledToQueueIndex(currentIndex, state.queue.shuffled)
+                            : currentIndex;
+
+                        const targetQueueIndex = findPreviousAlbumIndex(
+                            queue.items.map((item) => item.albumId),
+                            currentQueueIndex,
                         );
+
+                        if (targetQueueIndex === -1) {
+                            // No earlier album. In default order keep the long-standing
+                            // clamp-to-start; under shuffle that would jump to an arbitrary
+                            // track, so fall back to the previous track in playback order.
+                            previousIndex = isShuffle ? Math.max(0, currentIndex - 1) : 0;
+                        } else {
+                            previousIndex =
+                                (isShuffle
+                                    ? findShuffledPositionForQueueIndex(
+                                          targetQueueIndex,
+                                          state.queue.shuffled,
+                                      )
+                                    : targetQueueIndex) ?? Math.max(0, currentIndex - 1);
+                        }
                     } else {
                         // Otherwise, go to previous track
                         previousIndex = Math.max(0, currentIndex - 1);
@@ -2453,47 +2487,6 @@ function cleanupOrphanedSongs(state: any): boolean {
     }
 
     return hasOrphans;
-}
-
-function findIndexWithPreviousAlbum(queueItems: QueueSong[], currentIndex: number) {
-    const queueBeforeCurrent = queueItems.slice(0, currentIndex);
-    const currentItem = queueItems[currentIndex];
-
-    const previousAlbumIdInQueue = queueBeforeCurrent.findLast(
-        (i) => i.albumId !== currentItem.albumId,
-    )?.albumId;
-
-    let prevIndex = -1;
-
-    if (previousAlbumIdInQueue) {
-        for (let index = queueBeforeCurrent.length - 1; index > -1; index--) {
-            const element = queueBeforeCurrent[index];
-            if (element.albumId === previousAlbumIdInQueue) {
-                prevIndex = index;
-            }
-            if (prevIndex > -1 && element.albumId !== previousAlbumIdInQueue) {
-                break;
-            }
-        }
-    }
-
-    return prevIndex;
-}
-
-function findLastAlbumRange(queueItems: QueueSong[]) {
-    const lastAlbumId = queueItems.at(-1)?.albumId;
-    const rangeEnd = queueItems.length - 1;
-    let rangeStart = rangeEnd;
-
-    for (let index = rangeEnd; index > -1; index--) {
-        const element = queueItems[index];
-        rangeStart = index;
-        if (element.albumId !== lastAlbumId) {
-            break;
-        }
-    }
-
-    return [rangeStart + 1, rangeEnd];
 }
 
 function parseUniqueSeekToTimestamp(timestamp: string) {
