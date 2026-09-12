@@ -156,6 +156,7 @@ export const AddToPlaylistContextModal = ({
         setIsLoading(true);
         const allSongIds: string[] = [];
         let totalTracksAdded = 0;
+        let playlistsAdded = 0;
 
         try {
             if (albumId && albumId.length > 0) {
@@ -276,26 +277,25 @@ export const AddToPlaylistContextModal = ({
                     continue;
                 }
 
-                totalTracksAdded += songsToAdd.length;
-
-                addToPlaylistMutation.mutate(
-                    {
+                // Awaited so the summary below counts writes that actually landed. Caught
+                // per playlist so one failure does not abandon the remaining ones.
+                try {
+                    await addToPlaylistMutation.mutateAsync({
                         apiClientProps: { serverId },
                         body: { songId: songsToAdd },
                         query: { id: playlistId },
-                    },
-                    {
-                        onError: (err) => {
-                            toast.error({
-                                message: `[${
-                                    playlistSelect.find((playlist) => playlist.value === playlistId)
-                                        ?.label
-                                }] ${err.message}`,
-                                title: t('error.genericError'),
-                            });
-                        },
-                    },
-                );
+                    });
+
+                    totalTracksAdded += songsToAdd.length;
+                    playlistsAdded += 1;
+                } catch (err: any) {
+                    toast.error({
+                        message: `[${
+                            playlistSelect.find((playlist) => playlist.value === playlistId)?.label
+                        }] ${err.message}`,
+                        title: t('error.genericError'),
+                    });
+                }
             }
 
             setIsLoading(false);
@@ -314,7 +314,7 @@ export const AddToPlaylistContextModal = ({
             toast.success({
                 message: t('form.addToPlaylist.success', {
                     message: totalTracksAdded,
-                    numOfPlaylists: playlistIds.length,
+                    numOfPlaylists: playlistsAdded,
                 }),
             });
             closeModal(id);

@@ -121,21 +121,20 @@ export const CreatePlaylistForm = ({ onCancel, songs }: CreatePlaylistFormProps)
 
         const allSongIds = songs.map((song) => song.id);
 
-        addToPlaylistMutation.mutate(
-            {
+        // The promise chain is independent of the observer, so the error toast survives
+        // the closeAllModals() unmount that would otherwise discard an onError callback.
+        addToPlaylistMutation
+            .mutateAsync({
                 apiClientProps: { serverId: server.id },
                 body: { songId: allSongIds },
                 query: { id: playlistId },
-            },
-            {
-                onError: (err) => {
-                    toast.error({
-                        message: `${err.message}`,
-                        title: t('error.genericError'),
-                    });
-                },
-            },
-        );
+            })
+            .catch((err) => {
+                toast.error({
+                    message: `${err.message}`,
+                    title: t('error.genericError'),
+                });
+            });
     };
 
     const isPublicDisplayed = hasFeature(server, ServerFeature.PUBLIC_PLAYLIST);

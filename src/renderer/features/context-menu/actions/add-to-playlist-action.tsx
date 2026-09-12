@@ -247,26 +247,17 @@ export const AddToPlaylistAction = ({ items, itemType }: AddToPlaylistActionProp
                     return;
                 }
 
-                addToPlaylistMutation.mutate(
-                    {
-                        apiClientProps: { serverId },
-                        body: {
-                            songId: songsToAdd,
-                        },
-                        query: {
-                            id: playlistId,
-                        },
+                // Awaited so the success toast only fires once the write actually lands;
+                // failures fall through to the catch below.
+                await addToPlaylistMutation.mutateAsync({
+                    apiClientProps: { serverId },
+                    body: {
+                        songId: songsToAdd,
                     },
-                    {
-                        onError: (err) => {
-                            toast.error({
-                                message: err.message,
-                                title: t('error.genericError'),
-                            });
-                        },
-                        onSuccess: () => {},
+                    query: {
+                        id: playlistId,
                     },
-                );
+                });
 
                 toast.success({
                     message: t('form.addToPlaylist.success', {

@@ -54,7 +54,10 @@ export const applyDeletePlaylistOptimisticUpdates = (
             if (data) {
                 previousQueries.push({ data, queryKey });
                 queryClient.setQueryData(queryKey, (prev: PlaylistListResponse | undefined) => {
-                    if (prev) {
+                    // Not every cached playlist query holds a flat `items` array (the home
+                    // carousel caches an InfiniteData shape), and filtering a missing array
+                    // threw here, aborting onMutate so the delete never ran at all.
+                    if (prev && Array.isArray(prev.items)) {
                         return {
                             ...prev,
                             items: prev.items.filter((item: Playlist) => item.id !== playlistId),
