@@ -17,6 +17,7 @@ import { useFullscreenToggle } from '/@/renderer/hooks/use-fullscreen-toggle';
 import { useNativeMenuSync } from '/@/renderer/hooks/use-native-menu-sync';
 import { useSyncSettingsToMain } from '/@/renderer/hooks/use-sync-settings-to-main';
 import { AppRouter } from '/@/renderer/router/app-router';
+import { toast } from '/@/shared/components/toast/toast';
 import {
     useCssSettings,
     useHotkeySettings,
@@ -118,6 +119,7 @@ const AppEffects = () => (
         <CustomCssFileEffect />
         <CssSettingsEffect />
         <GlobalShortcutsEffect />
+        <MainToastEffect />
         <LanguageEffect />
         <NativeMenuSyncEffect />
         <FullscreenToggleEffect />
@@ -232,6 +234,25 @@ const CustomCssFileEffect = () => {
             removeCustomCssUpdatedListener();
         };
     }, [setSettings]);
+
+    return null;
+};
+
+/**
+ * Main sends toasts over 'toast-from-main' (mpv failures, the accessibility warning), but
+ * nothing in the renderer subscribed, so every one of them was silently dropped.
+ */
+const MainToastEffect = () => {
+    useEffect(() => {
+        if (!isElectron() || !utils) return;
+
+        // Keyed by type rather than message: the mpv error path interpolates volume/seek
+        // values, and a volume drag commits every 100ms, so a message-keyed id would queue
+        // a burst of near-identical toasts.
+        return utils.mainMessageListener((data) =>
+            toast.show({ ...data, id: `main-toast:${data.type}` }),
+        );
+    }, []);
 
     return null;
 };

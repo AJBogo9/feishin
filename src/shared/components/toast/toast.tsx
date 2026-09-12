@@ -3,9 +3,10 @@ import type { NotificationData } from '@mantine/notifications';
 import {
     cleanNotifications,
     cleanNotificationsQueue,
-    hideNotification,
     notifications,
+    notificationsStore,
     updateNotification,
+    updateNotificationsState,
 } from '@mantine/notifications';
 import clsx from 'clsx';
 
@@ -24,7 +25,7 @@ const getTitle = (type: NotificationProps['type']) => {
     return 'Info';
 };
 
-const showToast = ({ message, onClose, type, ...props }: NotificationProps) => {
+const showToast = ({ message, onClose, title, type, ...props }: NotificationProps) => {
     return notifications.show({
         ...props,
         classNames: {
@@ -42,17 +43,28 @@ const showToast = ({ message, onClose, type, ...props }: NotificationProps) => {
         },
         message: message ?? '',
         onClose,
-        title: getTitle(type),
+        title: title ?? getTitle(type),
         withBorder: true,
         withCloseButton: true,
     });
 };
 
+/**
+ * Remove a toast WITHOUT running its `onClose`.
+ *
+ * Mantine's `hideNotification` runs `onClose` first, so a programmatic hide is indistinguishable
+ * from a user dismissal. Callers whose `onClose` means "the user cancelled this" (the player's
+ * loading toast cancels its in-flight queries there) would otherwise cancel their own work at
+ * the moment it succeeded.
+ */
+const dismissToast = (id: string) =>
+    updateNotificationsState(notificationsStore, (all) => all.filter((n) => n.id !== id));
+
 export const toast = {
     clean: cleanNotifications,
     cleanQueue: cleanNotificationsQueue,
     error: (props: NotificationProps) => showToast({ type: 'error', ...props }),
-    hide: hideNotification,
+    hide: dismissToast,
     info: (props: NotificationProps) => showToast({ type: 'info', ...props }),
     show: showToast,
     success: (props: NotificationProps) => showToast({ type: 'success', ...props }),

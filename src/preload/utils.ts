@@ -97,7 +97,15 @@ const playerErrorListener = (cb: (data: { code: number }) => void) => {
 const mainMessageListener = (
     cb: (data: { message: string; type: 'error' | 'info' | 'success' | 'warning' }) => void,
 ) => {
-    ipcRenderer.on('toast-from-main', (_, data) => cb(data));
+    const listener = (
+        _event: unknown,
+        data: { message: string; type: 'error' | 'info' | 'success' | 'warning' },
+    ) => cb(data);
+    ipcRenderer.on('toast-from-main', listener);
+
+    return () => {
+        ipcRenderer.removeListener('toast-from-main', listener);
+    };
 };
 
 const download = (url: string) => {
