@@ -26,7 +26,7 @@ const queryConfig: DefaultOptions = {
     queries: {
         gcTime: 1000 * 20, // 20 seconds
         refetchOnWindowFocus: false,
-        retry: process.env.NODE_ENV === 'production',
+        retry: process.env.NODE_ENV === 'production' ? 3 : false,
         staleTime: 1000 * 10, // 10 seconds
         throwOnError: (error: any) => {
             return error?.response?.status >= 500;
