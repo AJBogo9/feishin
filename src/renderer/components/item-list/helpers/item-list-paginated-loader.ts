@@ -112,7 +112,9 @@ export const useItemListPaginatedLoader = ({
                 });
             }
 
-            await queryClient.invalidateQueries();
+            await queryClient.invalidateQueries({
+                queryKey: queryKeys[getQueryKeyName(itemType)].root(serverId),
+            });
         },
         mutationKey: getListRefreshMutationKey(eventKey ?? 'paginated'),
     });

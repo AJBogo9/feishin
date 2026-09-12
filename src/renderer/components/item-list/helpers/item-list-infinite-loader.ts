@@ -325,8 +325,10 @@ export const useItemListInfiniteLoader = ({
 
     const refreshMutation = useMutation({
         mutationFn: async (force?: boolean) => {
-            // Invalidate all queries to ensure fresh data
-            queryClient.invalidateQueries();
+            // Invalidate this item type's queries to ensure fresh data
+            queryClient.invalidateQueries({
+                queryKey: queryKeys[getListQueryKeyName(itemType)].root(serverId),
+            });
 
             // Reset the infinite list data
             const currentData = queryClient.getQueryData<{
