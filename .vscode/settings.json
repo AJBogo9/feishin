@@ -39,6 +39,24 @@
         "out/**/*": true,
         "dist/**/*": true
     },
+    "files.exclude": {
+        "node_modules": true,
+        "dist": true,
+        "out": true,
+        "tsconfig.*.tsbuildinfo": true
+    },
+    "explorer.fileNesting.enabled": true,
+    "explorer.fileNesting.expand": false,
+    "explorer.fileNesting.patterns": {
+        "AGENTS.md": "CLAUDE.md, skills-lock.json",
+        "Dockerfile": "docker-compose.yaml, .dockerignore, ng.conf.template, settings.js.template",
+        "electron-builder.yml": "electron-builder-*.yml, dev-app-update.yml",
+        "electron.vite.config.ts": "web.vite.config.ts, remote.vite.config.ts, vite.*.ts",
+        "install-feishin-appimage": "feishin.desktop.tmpl, org.jeffvli.feishin.metainfo.xml",
+        "package.json": "pnpm-lock.yaml, pnpm-workspace.yaml, .npmrc, eslint.config.mjs, .prettierrc.yaml, .prettierignore, .stylelintrc.json, commitlint.config.mjs, .editorconfig, postcss.config.cjs",
+        "README.md": "CONTRIBUTING.md, LICENSE",
+        "tsconfig.json": "tsconfig.*.json"
+    },
     "i18n-ally.localesPaths": ["src/i18n", "src/i18n/locales"],
     "typescript.tsdk": "node_modules/typescript/lib",
     "typescript.preferences.importModuleSpecifier": "non-relative",
